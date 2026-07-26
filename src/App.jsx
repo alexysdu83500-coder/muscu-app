@@ -168,6 +168,47 @@ function usePersistentState(key, initial) {
   return [state, setState, loaded];
 }
 
+// Variante "debounced" : sauvegarde automatiquement à chaque changement, mais regroupe les
+// écritures très rapprochées (ex: taper un poids caractère par caractère) en une seule,
+// quelques centaines de ms après la dernière frappe — au lieu d'un appel réseau par
+// caractère. `flushNow()` force une sauvegarde immédiate (utilisé avant fermeture de page).
+function usePersistentStateDebounced(key, initial, delayMs = 500) {
+  const [state, setState] = useState(initial);
+  const [loaded, setLoaded] = useState(false);
+  const timerRef = useRef(null);
+  const latestRef = useRef(initial);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get(key, false);
+        if (res && res.value != null) { const v = JSON.parse(res.value); setState(v); latestRef.current = v; }
+      } catch (e) { /* rien de sauvegardé, on garde la valeur initiale */ }
+      setLoaded(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  useEffect(() => { latestRef.current = state; }, [state]);
+
+  const flushNow = useCallback(() => {
+    if (!loaded) return;
+    clearTimeout(timerRef.current);
+    window.storage.set(key, JSON.stringify(latestRef.current), false).catch(() => {});
+  }, [key, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      window.storage.set(key, JSON.stringify(state), false).catch((e) => console.error("storage set failed", key, e));
+    }, delayMs);
+    return () => clearTimeout(timerRef.current);
+  }, [state, loaded, key, delayMs]);
+
+  return [state, setState, loaded, flushNow];
+}
+
 /* ============================== DEFAULT DATA ============================== */
 
 const singleBlock = (name, series, reps, rest, notes = "") => ({
@@ -389,14 +430,21 @@ export default function App() {
   const [settings, setSettings, settingsLoaded] = usePersistentState("gt_settings_v1", {
     goalWeight: null, lastProgramIndex: -1, restDefault: 90,
   });
-  // Profil "compte" local à cet appareil (voir la note sur l'authentification dans la
-  // conversation) : { name, email, age, height, goal, level, createdAt } | null.
-  const [userProfile, setUserProfile, profileLoaded] = usePersistentState("gt_profile_v1", null);
+  // Profil personnel local à cet appareil — pas de compte, pas de mot de passe.
+  // { name, age, height, goal, level }, toujours un objet (pas de flux "création de compte").
+  const [userProfile, setUserProfile, profileLoaded] = usePersistentState("gt_profile_v1", {
+    name: "", age: null, height: null, goal: "", level: "",
+  });
 
   // Navigation : seulement 4 onglets. Le sous-détail (programme ouvert, séance ouverte...)
   // vit désormais localement DANS chaque écran concerné (ex: ProfileHub), plus au niveau App.
   const [tab, setTab] = useState("dashboard"); // 'dashboard' | 'workout' | 'progress' | 'profile'
-  const [activeWorkout, setActiveWorkout] = useState(null);
+
+  // Séance active : PERSISTÉE (avant, c'était un simple useState — perdu à chaque refresh).
+  // `usePersistentStateDebounced` regroupe les sauvegardes pendant la saisie rapide (poids/
+  // reps tapés caractère par caractère) au lieu d'écrire à chaque frappe, et `flushActiveWorkout`
+  // force une sauvegarde immédiate juste avant que la page ne se ferme (voir l'effet plus bas).
+  const [activeWorkout, setActiveWorkout, activeWorkoutLoaded, flushActiveWorkout] = usePersistentStateDebounced("gt_active_workout_v1", null, 400);
 
   // "État global de séance" (léger) : un instantané en lecture seule de ce qui se passe
   // dans la séance en cours (exercice, chrono, phase, repos restant), mis à jour par
@@ -406,7 +454,22 @@ export default function App() {
   // source de vérité (qui reste dans WorkoutSession/activeWorkout).
   const [sessionStatus, setSessionStatus] = useState(null);
 
-  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded;
+  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded && activeWorkoutLoaded;
+
+  // Sécurité : force une sauvegarde immédiate de la séance active juste avant que
+  // l'utilisateur ne quitte/ferme/rafraîchisse la page, plutôt que d'attendre le debounce.
+  useEffect(() => {
+    const flush = () => flushActiveWorkout();
+    const onVisibility = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("beforeunload", flush);
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [flushActiveWorkout]);
 
   useEffect(() => {
     if (!programsLoaded) return;
@@ -418,11 +481,11 @@ export default function App() {
   const startWorkout = (program) => { setActiveWorkout(makeWorkout(program)); setTab("workout"); };
   const endWorkout = () => { setActiveWorkout(null); setSessionStatus(null); };
 
-  // Supprime le compte ET toutes les données locales associées (programmes, historique,
-  // poids, réglages) — voir <SettingsPage/>, "Zone de danger". Irréversible.
-  const deleteAccount = () => {
+  // Efface toutes les données locales (programmes, historique, poids, réglages, profil) —
+  // voir <SettingsPage/>, "Zone de danger". Irréversible.
+  const resetData = () => {
     endWorkout();
-    setUserProfile(null);
+    setUserProfile({ name: "", age: null, height: null, goal: "", level: "" });
     setPrograms(DEFAULT_PROGRAMS);
     setSessions([]);
     setWeightEntries([]);
@@ -494,7 +557,7 @@ export default function App() {
                   sessions={sessions} setSessions={setSessions}
                   weightEntries={weightEntries} setWeightEntries={setWeightEntries}
                   settings={settings} setSettings={setSettings}
-                  userProfile={userProfile} setUserProfile={setUserProfile} onDeleteAccount={deleteAccount}
+                  userProfile={userProfile} setUserProfile={setUserProfile} onResetData={resetData}
                   onStartProgram={startWorkout}
                   onExport={() => exportBackup(programs, sessions, weightEntries, settings)}
                   onImport={(data) => {
@@ -764,70 +827,19 @@ function LabeledInput({ theme, label, value, onChange, placeholder = "", secure 
   );
 }
 
-// Rappel honnête et non alarmiste : ce compte est local à cet appareil. Aucun mot de passe
-// n'est jamais enregistré, même localement — le champ existe seulement pour représenter
-// l'écran demandé. Une vraie synchronisation multi-appareils nécessite un backend (voir
-// l'explication fournie à côté du code).
-function AuthDisclaimer({ theme }) {
+// En-tête affiché tout en haut du menu Profil : avatar + nom si renseigné, sinon un
+// avatar neutre — tape dessus pour aller renseigner tes infos dans "Mon profil".
+function ProfileAccountHeader({ theme, userProfile, onOpenProfile }) {
+  const initials = (userProfile?.name || "").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
   return (
-    <div className="rounded-2xl p-3 flex items-start gap-2.5" style={{ background: `${theme.textMuted}0d` }}>
-      <Info size={14} color={theme.textMuted} className="mt-0.5 shrink-0" />
-      <p style={{ color: theme.textMuted }} className="text-[11.5px] leading-snug">
-        Profil local à cet appareil. Aucun mot de passe n'est enregistré. La synchronisation multi-appareils nécessite un backend, non disponible dans cet aperçu.
-      </p>
-    </div>
-  );
-}
-
-function SocialAuthButtons({ theme }) {
-  const [msg, setMsg] = useState(false);
-  return (
-    <div>
-      <div className="flex items-center gap-3 my-3">
-        <div className="flex-1 h-px" style={{ background: theme.border }} />
-        <span style={{ color: theme.textFaint }} className="text-[11px] font-semibold">OU</span>
-        <div className="flex-1 h-px" style={{ background: theme.border }} />
-      </div>
-      <div className="grid grid-cols-2 gap-2.5">
-        <BigButton theme={theme} onClick={() => setMsg(true)}>Google</BigButton>
-        <BigButton theme={theme} onClick={() => setMsg(true)}>Apple</BigButton>
-      </div>
-      {msg && (
-        <p style={{ color: theme.textFaint }} className="text-[11.5px] text-center mt-2.5 px-2">
-          La connexion Google/Apple nécessite une configuration backend (identifiants OAuth, serveur de vérification) — indisponible dans cet aperçu.
-        </p>
-      )}
-    </div>
-  );
-}
-
-// En-tête de compte affiché tout en haut du menu Profil : CTA de création si pas de
-// profil local, sinon avatar + nom + e-mail.
-function ProfileAccountHeader({ theme, userProfile, onOpenAccount, onOpenSignUp }) {
-  if (!userProfile) {
-    return (
-      <button onClick={onOpenSignUp} className="w-full text-left active:scale-[0.98] transition-transform mb-1">
-        <Card theme={theme} className="p-4 flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${theme.accent}14, ${theme.accent2}0a)`, border: `1px solid ${theme.accent}33` }}>
-          <IconBadge theme={theme} icon={User} size={44} iconSize={20} filled />
-          <div className="flex-1 min-w-0">
-            <p style={{ color: theme.text }} className="font-bold text-[14.5px]">Créer un compte pour sauvegarder ta progression</p>
-            <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">Retrouve tes séances sur tous tes appareils</p>
-          </div>
-          <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
-        </Card>
-      </button>
-    );
-  }
-  const initials = (userProfile.name || "?").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
-  return (
-    <button onClick={onOpenAccount} className="w-full text-left active:scale-[0.98] transition-transform mb-1">
+    <button onClick={onOpenProfile} className="w-full text-left active:scale-[0.98] transition-transform mb-1">
       <Card theme={theme} className="p-4 flex items-center gap-3">
         <div className="rounded-full flex items-center justify-center shrink-0 text-white font-extrabold" style={{ width: 48, height: 48, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, fontSize: 16 }}>
           {initials || <User size={20} />}
         </div>
         <div className="flex-1 min-w-0">
-          <p style={{ color: theme.text }} className="font-bold text-[15px] truncate">{userProfile.name}</p>
-          <p style={{ color: theme.textMuted }} className="text-[12px] truncate">{userProfile.email}</p>
+          <p style={{ color: theme.text }} className="font-bold text-[15px] truncate">{userProfile?.name || "Mon profil"}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] truncate">{userProfile?.goal ? (GOALS.find((g) => g.id === userProfile.goal)?.label || "") : "Renseigne tes infos personnelles"}</p>
         </div>
         <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
       </Card>
@@ -835,10 +847,10 @@ function ProfileAccountHeader({ theme, userProfile, onOpenAccount, onOpenSignUp 
   );
 }
 
-function ProfileMenu({ theme, userProfile, onSelect, onOpenAccount, onOpenSignUp }) {
+function ProfileMenu({ theme, userProfile, onSelect, onOpenProfile }) {
   return (
     <div className="px-4 pt-2 space-y-2.5">
-      <ProfileAccountHeader theme={theme} userProfile={userProfile} onOpenAccount={onOpenAccount} onOpenSignUp={onOpenSignUp} />
+      <ProfileAccountHeader theme={theme} userProfile={userProfile} onOpenProfile={onOpenProfile} />
       {PROFILE_MENU_ITEMS.map((it) => (
         <button key={it.id} onClick={() => onSelect(it.view)} className="w-full text-left active:scale-[0.98] transition-transform">
           <Card theme={theme} className="p-4 flex items-center gap-3">
@@ -855,94 +867,15 @@ function ProfileMenu({ theme, userProfile, onSelect, onOpenAccount, onOpenSignUp
   );
 }
 
-// --- Écrans de compte (Inscription / Connexion / Mot de passe oublié) ------------------
-// Tous fonctionnent en local uniquement : voir <AuthDisclaimer/>. Aucun mot de passe n'est
-// jamais lu depuis le state après saisie (les champs `password` ne sont branchés à rien).
-
-function SignUpScreen({ theme, onBack, onCreate }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  return (
-    <div>
-      <SubPageHeader theme={theme} title="Créer un compte" onBack={onBack} />
-      <div className="px-4 space-y-3 pb-6">
-        <AuthDisclaimer theme={theme} />
-        <LabeledInput theme={theme} label="Nom / pseudo" value={name} onChange={setName} placeholder="Ex : Alex" />
-        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
-        <LabeledInput theme={theme} label="Mot de passe" value={password} onChange={setPassword} placeholder="••••••••" secure />
-        <BigButton theme={theme} gradient disabled={!name.trim() || !email.trim()} onClick={() => onCreate({ name: name.trim(), email: email.trim() })}>
-          <User size={17} /> Créer mon compte
-        </BigButton>
-        <SocialAuthButtons theme={theme} />
-      </div>
-    </div>
-  );
-}
-
-function LoginScreen({ theme, userProfile, onBack, onLoggedIn, onGoSignUp }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const submit = () => {
-    if (userProfile && userProfile.email.trim().toLowerCase() === email.trim().toLowerCase()) {
-      setError(""); onLoggedIn();
-    } else {
-      setError("Aucun compte local avec cet e-mail sur cet appareil.");
-    }
-  };
-  return (
-    <div>
-      <SubPageHeader theme={theme} title="Connexion" onBack={onBack} />
-      <div className="px-4 space-y-3 pb-6">
-        <AuthDisclaimer theme={theme} />
-        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
-        <LabeledInput theme={theme} label="Mot de passe" value={password} onChange={setPassword} placeholder="••••••••" secure />
-        {error && <p style={{ color: theme.bad }} className="text-[12px] px-1">{error}</p>}
-        <BigButton theme={theme} gradient onClick={submit}>Se connecter</BigButton>
-        <SocialAuthButtons theme={theme} />
-        <button onClick={onGoSignUp} className="w-full text-center text-[12.5px] font-bold pt-1" style={{ color: theme.accent }}>Créer un compte</button>
-      </div>
-    </div>
-  );
-}
-
-function ForgotPasswordScreen({ theme, onBack }) {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  return (
-    <div>
-      <SubPageHeader theme={theme} title="Mot de passe oublié" onBack={onBack} />
-      <div className="px-4 space-y-3 pb-6">
-        <AuthDisclaimer theme={theme} />
-        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
-        <BigButton theme={theme} gradient onClick={() => setSent(true)}>Envoyer le lien</BigButton>
-        {sent && (
-          <p style={{ color: theme.good }} className="text-[12.5px] text-center px-2">
-            Dans une version connectée à un vrai backend, un e-mail serait envoyé à {email || "cette adresse"}. Aucun e-mail n'est envoyé dans cet aperçu.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// --- Écran "Mon profil" : identité modifiable + aperçu rapide de l'activité -------------
-function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEntries, programs, onGoToSignUp, onLogout }) {
-  if (!userProfile) {
-    return (
-      <div className="px-4 pt-2 space-y-3">
-        <Card theme={theme}><EmptyState theme={theme} icon={User} title="Aucun compte" subtitle="Crée un compte pour personnaliser ton profil et préparer la synchronisation multi-appareils." /></Card>
-        <BigButton theme={theme} gradient onClick={onGoToSignUp}><User size={17} /> Créer un compte</BigButton>
-      </div>
-    );
-  }
-
+// --- "Mon profil" : identité modifiable + aperçu rapide de l'activité ------------------
+// Profil local à cet appareil (pas de compte, pas de mot de passe, pas de connexion —
+// simplement tes infos personnelles pour personnaliser l'app).
+function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEntries, programs }) {
   const update = (patch) => setUserProfile((p) => ({ ...p, ...patch }));
   const totalTonnage = sessions.reduce((a, s) => a + (s.tonnage || 0), 0);
   const lastWeight = weightEntries.length ? [...weightEntries].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
   const last30 = sessions.filter((s) => Date.now() - s.startedAt < 30 * 86400000).length;
-  const initials = (userProfile.name || "?").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+  const initials = (userProfile.name || "").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
   return (
     <div className="px-4 pt-2 space-y-4">
@@ -951,8 +884,8 @@ function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEnt
           {initials || <User size={22} />}
         </div>
         <div className="min-w-0">
-          <p style={{ color: theme.text }} className="text-[18px] font-extrabold truncate">{userProfile.name}</p>
-          <p style={{ color: theme.textMuted }} className="text-[12.5px] truncate">{userProfile.email}</p>
+          <p style={{ color: theme.text }} className="text-[18px] font-extrabold truncate">{userProfile.name || "Mon profil"}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12.5px]">Profil enregistré sur cet appareil</p>
         </div>
       </Card>
 
@@ -965,8 +898,7 @@ function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEnt
 
       <Card theme={theme} className="p-4 space-y-3">
         <p style={{ color: theme.text }} className="font-bold text-[14px]">Informations personnelles</p>
-        <LabeledInput theme={theme} label="Nom / pseudo" value={userProfile.name} onChange={(v) => update({ name: v })} />
-        <LabeledInput theme={theme} label="E-mail" value={userProfile.email} onChange={(v) => update({ email: v })} keyboard="email" />
+        <LabeledInput theme={theme} label="Nom / pseudo" value={userProfile.name} onChange={(v) => update({ name: v })} placeholder="Ex : Alex" />
         <div className="grid grid-cols-2 gap-2.5">
           <LabeledInput theme={theme} label="Âge" value={userProfile.age ?? ""} onChange={(v) => update({ age: v ? Number(v) : null })} placeholder="optionnel" />
           <LabeledInput theme={theme} label="Taille (cm)" value={userProfile.height ?? ""} onChange={(v) => update({ height: v ? Number(v) : null })} placeholder="optionnel" />
@@ -983,16 +915,14 @@ function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEnt
           {LEVELS.map((l) => <Pill key={l.id} theme={theme} active={userProfile.level === l.id} onClick={() => update({ level: l.id })}>{l.label}</Pill>)}
         </div>
       </Card>
-
-      <button onClick={onLogout} className="w-full text-center text-[13px] font-semibold py-2" style={{ color: theme.bad }}>Se déconnecter</button>
     </div>
   );
 }
 
 // Réglages : ce qui n'avait pas encore de vrai réglage dans l'app (le repos par défaut
 // existait déjà en state mais n'était modifiable nulle part) + rappel du thème.
-function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, userProfile, onDeleteAccount }) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
+function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, onResetData }) {
+  const [confirmReset, setConfirmReset] = useState(false);
   return (
     <div className="px-4 pt-2 space-y-3">
       <Card theme={theme} className="p-4 flex items-center justify-between">
@@ -1017,19 +947,17 @@ function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, userPro
         </div>
         <MiniStepper theme={theme} label="Secondes" value={settings.restDefault} step={15} onChange={(v) => setSettings((s) => ({ ...s, restDefault: v }))} suffix="s" />
       </Card>
-      {userProfile && (
-        <Card theme={theme} className="p-4">
-          <p style={{ color: theme.text }} className="font-semibold text-[14.5px] mb-1">Zone de danger</p>
-          <p style={{ color: theme.textMuted }} className="text-[12px] mb-3">Supprime définitivement ton compte et toutes tes données sur cet appareil (programmes, historique, poids).</p>
-          <button onClick={() => setConfirmDelete(true)} className="w-full rounded-xl py-3 font-bold text-[13px] flex items-center justify-center gap-2" style={{ background: `${theme.bad}18`, color: theme.bad }}>
-            <Trash2 size={14} /> Supprimer le compte
-          </button>
-        </Card>
-      )}
+      <Card theme={theme} className="p-4">
+        <p style={{ color: theme.text }} className="font-semibold text-[14.5px] mb-1">Zone de danger</p>
+        <p style={{ color: theme.textMuted }} className="text-[12px] mb-3">Efface définitivement toutes les données sur cet appareil (programmes, historique, poids, profil).</p>
+        <button onClick={() => setConfirmReset(true)} className="w-full rounded-xl py-3 font-bold text-[13px] flex items-center justify-center gap-2" style={{ background: `${theme.bad}18`, color: theme.bad }}>
+          <Trash2 size={14} /> Réinitialiser mes données
+        </button>
+      </Card>
       <AnimatePresence>
-        {confirmDelete && (
-          <ConfirmSheet theme={theme} danger title="Supprimer le compte ?" subtitle="Toutes tes données sur cet appareil seront définitivement effacées. Cette action est irréversible."
-            confirmLabel="Supprimer définitivement" onConfirm={onDeleteAccount} onCancel={() => setConfirmDelete(false)} />
+        {confirmReset && (
+          <ConfirmSheet theme={theme} danger title="Réinitialiser les données ?" subtitle="Toutes tes données sur cet appareil seront définitivement effacées. Cette action est irréversible."
+            confirmLabel="Réinitialiser" onConfirm={onResetData} onCancel={() => setConfirmReset(false)} />
         )}
       </AnimatePresence>
     </div>
@@ -1044,7 +972,7 @@ function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, userPro
 function ProfileHub({
   theme, isDark, setIsDark, programs, setPrograms, sessions, setSessions,
   weightEntries, setWeightEntries, settings, setSettings, onStartProgram, onExport, onImport,
-  userProfile, setUserProfile, onDeleteAccount,
+  userProfile, setUserProfile, onResetData,
 }) {
   const [view, setView] = useState(null); // null = menu racine
   const [programId, setProgramId] = useState(null);
@@ -1062,37 +990,9 @@ function ProfileHub({
             {isDark ? <Sun size={17} color={theme.text} /> : <Moon size={17} color={theme.text} />}
           </button>
         </div>
-        <ProfileMenu
-          theme={theme} userProfile={userProfile} onSelect={setView}
-          onOpenAccount={() => setView("myprofile")} onOpenSignUp={() => setView("signup")}
-        />
+        <ProfileMenu theme={theme} userProfile={userProfile} onSelect={setView} onOpenProfile={() => setView("myprofile")} />
       </div>
     );
-  }
-
-  if (view === "signup") {
-    return (
-      <SignUpScreen
-        theme={theme} onBack={() => setView(null)}
-        onCreate={(data) => {
-          setUserProfile({ name: data.name, email: data.email, age: null, height: null, goal: "", level: "", createdAt: new Date().toISOString() });
-          setView("myprofile");
-        }}
-      />
-    );
-  }
-
-  if (view === "login") {
-    return (
-      <LoginScreen
-        theme={theme} userProfile={userProfile} onBack={() => setView(null)}
-        onLoggedIn={() => setView("myprofile")} onGoSignUp={() => setView("signup")}
-      />
-    );
-  }
-
-  if (view === "forgotPassword") {
-    return <ForgotPasswordScreen theme={theme} onBack={() => setView("login")} />;
   }
 
   if (view === "myprofile") {
@@ -1102,8 +1002,6 @@ function ProfileHub({
         <MyProfileView
           theme={theme} userProfile={userProfile} setUserProfile={setUserProfile}
           sessions={sessions} weightEntries={weightEntries} programs={programs}
-          onGoToSignUp={() => setView("signup")}
-          onLogout={() => { setUserProfile(null); setView(null); }}
         />
       </div>
     );
@@ -1191,7 +1089,7 @@ function ProfileHub({
     return (
       <div>
         <SubPageHeader theme={theme} title="Paramètres" onBack={() => setView(null)} />
-        <SettingsPage theme={theme} isDark={isDark} setIsDark={setIsDark} settings={settings} setSettings={setSettings} userProfile={userProfile} onDeleteAccount={onDeleteAccount} />
+        <SettingsPage theme={theme} isDark={isDark} setIsDark={setIsDark} settings={settings} setSettings={setSettings} onResetData={onResetData} />
       </div>
     );
   }
@@ -1894,33 +1792,48 @@ function useSessionClock(startedAt) {
 // --- Timer #2 : minuteur de récupération ------------------------------------------------
 // Totalement indépendant du chrono de séance. Peut être démarré, mis en pause, repris ou
 // arrêté sans jamais affecter le chrono global (qui tourne dans un hook séparé ci-dessus).
-function useRestTimer() {
-  const [rest, setRest] = useState(null); // { totalSec, remainingSec, paused } | null
-  const intervalRef = useRef(null);
+//
+// PERSISTANCE : au lieu de stocker uniquement "il reste 47 secondes" (une valeur qui se
+// périme instantanément et ne veut plus rien dire après un refresh), on stocke l'horodatage
+// AUQUEL le repos doit se terminer (`endsAt`). Le temps restant est recalculé à la volée à
+// chaque rendu : `endsAt - Date.now()`. Résultat : après un rafraîchissement de page (même
+// si l'utilisateur revient 10 secondes plus tard), le décompte reprend exactement à la bonne
+// valeur, sans dérive — et on n'écrit dans le stockage qu'au démarrage/pause/reprise/arrêt,
+// jamais à chaque tick de la seconde.
+function useRestTimer(workoutId) {
+  const [stored, setStored, loaded] = usePersistentState(`gt_rest_${workoutId}`, null);
+  // { totalSec, paused, endsAt (ms, valable si !paused), pausedRemainingSec (valable si paused) } | null
+  const [, forceTick] = useState(0);
+  const firedRef = useRef(false);
 
   useEffect(() => {
-    clearInterval(intervalRef.current);
-    if (!rest || rest.paused) return; // en pause -> le décompte ne bouge plus
-    intervalRef.current = setInterval(() => {
-      setRest((r) => {
-        if (!r || r.remainingSec <= 0) return r;
-        const next = r.remainingSec - 1;
-        if (next === 0) vibrate([300, 100, 300]); // vibration quand la récupération se termine
-        return { ...r, remainingSec: next };
-      });
-    }, 1000);
-    return () => clearInterval(intervalRef.current);
-    // On ne relance l'intervalle que si l'état pause change ou qu'un nouveau timer démarre,
-    // jamais à chaque tick (remainingSec est mis à jour via la fonction de setRest ci-dessus).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rest?.paused, rest?.totalSec, !!rest]);
+    if (!stored || stored.paused) return;
+    const id = setInterval(() => forceTick((n) => n + 1), 1000); // ne fait que forcer un re-rendu
+    return () => clearInterval(id);
+  }, [stored?.paused, stored?.endsAt]);
+
+  const remainingSec = stored
+    ? (stored.paused ? stored.pausedRemainingSec : Math.max(0, Math.round((stored.endsAt - Date.now()) / 1000)))
+    : null;
+
+  useEffect(() => {
+    if (!stored || stored.paused) { firedRef.current = false; return; }
+    if (remainingSec === 0 && !firedRef.current) { firedRef.current = true; vibrate([300, 100, 300]); }
+  }, [remainingSec, stored?.paused]);
 
   return {
-    rest,
-    start: (sec) => setRest({ totalSec: sec, remainingSec: sec, paused: false }),
-    pause: () => setRest((r) => (r ? { ...r, paused: true } : r)),
-    resume: () => setRest((r) => (r ? { ...r, paused: false } : r)),
-    stop: () => setRest(null),
+    rest: stored ? { totalSec: stored.totalSec, remainingSec, paused: stored.paused } : null,
+    loaded,
+    start: (sec) => setStored({ totalSec: sec, paused: false, endsAt: Date.now() + sec * 1000, pausedRemainingSec: null }),
+    pause: () => setStored((r) => {
+      if (!r || r.paused) return r;
+      return { ...r, paused: true, pausedRemainingSec: Math.max(0, Math.round((r.endsAt - Date.now()) / 1000)) };
+    }),
+    resume: () => setStored((r) => {
+      if (!r || !r.paused) return r;
+      return { ...r, paused: false, endsAt: Date.now() + (r.pausedRemainingSec || 0) * 1000, pausedRemainingSec: null };
+    }),
+    stop: () => setStored(null),
   };
 }
 
@@ -2005,18 +1918,46 @@ function RestTimerCircle({ theme, rest, onPauseResume, onSkip, size = 250 }) {
 }
 
 // --- Gros champ chiffré avec boutons +/- larges (adapté au tactile pendant l'effort) ---
+// Stepper poids/reps utilisé pendant la séance. Les deux instances (Charge / Répétitions)
+// sont posées côte à côte dans une grille 2 colonnes — voir la note plus bas sur la cause
+// exacte du décalage que ce composant corrige.
 function BigNumberStepper({ theme, label, value, onChange, step = 1 }) {
   const num = Number(value) || 0;
   return (
-    <div className="rounded-2xl p-3" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
-      <p style={{ color: theme.textFaint }} className="text-[10px] font-bold uppercase tracking-wide mb-2 text-center">{label}</p>
-      <div className="flex items-center justify-between gap-1.5">
-        <button onClick={() => onChange(String(Math.max(0, num - step)))} className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0" style={{ width: 42, height: 42, background: theme.bg }}>
+    <div className="rounded-2xl p-3 flex flex-col w-full" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+      {/* Hauteur de ligne fixe (au lieu d'un simple margin-bottom) : garantit que le libellé
+          occupe TOUJOURS la même hauteur, qu'il tienne sur une ligne ("Répétitions") ou
+          risque de passer à la ligne sur un petit écran ("Charge (kg)"). Sans ça, la ligne
+          -/valeur/+ ne démarre pas à la même hauteur d'une carte à l'autre : c'était la
+          cause exacte du décalage entre le champ Poids et le champ Répétitions. */}
+      <p
+        style={{ color: theme.textFaint, height: 14, lineHeight: "14px" }}
+        className="text-[10px] font-bold uppercase tracking-wide mb-2 text-center whitespace-nowrap overflow-hidden"
+      >
+        {label}
+      </p>
+      <div className="flex items-center justify-between gap-1.5 w-full">
+        <button
+          onClick={() => onChange(String(Math.max(0, num - step)))}
+          className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0"
+          style={{ width: 42, height: 42, background: theme.bg }}
+        >
           <Minus size={16} color={theme.text} />
         </button>
-        <input inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)}
-          className="flex-1 text-center bg-transparent outline-none font-extrabold text-[22px]" style={{ color: theme.text }} />
-        <button onClick={() => onChange(String(num + step))} className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0" style={{ width: 42, height: 42, background: theme.bg }}>
+        {/* min-w-0 : par défaut, un <input> dans une rangée flex refuse de rétrécir sous sa
+            largeur de contenu (min-width: auto). Sur un petit écran, ça pouvait pousser le
+            bouton "+" hors de la carte ou faire chevaucher les chiffres. flex-1 + min-w-0
+            laisse l'input occuper exactement l'espace restant, jamais plus. */}
+        <input
+          inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)}
+          className="flex-1 min-w-0 text-center bg-transparent outline-none font-extrabold text-[22px]"
+          style={{ color: theme.text }}
+        />
+        <button
+          onClick={() => onChange(String(num + step))}
+          className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0"
+          style={{ width: 42, height: 42, background: theme.bg }}
+        >
           <Plus size={16} color={theme.text} />
         </button>
       </div>
@@ -2207,7 +2148,10 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
 
       <LastSessionCard theme={theme} last={last} currentSet={{ weight: set.weight, reps: set.reps, round }} />
 
-      <div className="grid grid-cols-2 gap-3 mb-5">
+      {/* grid-cols-2 (= repeat(2, minmax(0,1fr))) donne deux colonnes strictement égales en
+          largeur, qui s'adaptent à n'importe quelle taille d'écran ; items-stretch force les
+          deux cartes à la même hauteur. Aucune largeur fixe, aucun positionnement absolu. */}
+      <div className="grid grid-cols-2 gap-3 mb-5 items-stretch">
         <BigNumberStepper theme={theme} label="Charge (kg)" value={set.weight} onChange={(v) => onChangeSet({ weight: v })} step={2.5} />
         <BigNumberStepper theme={theme} label="Répétitions" value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={1} />
       </div>
@@ -2233,15 +2177,23 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   const theme = useTheme(true);
 
   const elapsedSec = useSessionClock(workout.startedAt);
-  const { rest, start: startRest, pause: pauseRest, resume: resumeRest, stop: stopRest } = useRestTimer();
+  const { rest, loaded: restLoaded, start: startRest, pause: pauseRest, resume: resumeRest, stop: stopRest } = useRestTimer(workout.id);
 
   const steps = useMemo(() => buildSessionSteps(workout.blocks), [workout.blocks]);
-  const [stepIndex, setStepIndex] = useState(0);
-  const [phase, setPhase] = useState("set"); // 'set' | 'rest' | 'done'
+  // stepIndex et phase sont PERSISTÉS, chacun sous une clé propre à cette séance
+  // (`workout.id`) : après un rafraîchissement de page, on retombe exactement sur le même
+  // exercice / la même série plutôt que de repartir de zéro.
+  const [stepIndex, setStepIndex, stepIndexLoaded] = usePersistentState(`gt_step_${workout.id}`, 0);
+  const [phase, setPhase, phaseLoaded] = usePersistentState(`gt_phase_${workout.id}`, "set"); // 'set' | 'rest' | 'done'
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [lockedHint, setLockedHint] = useState(false); // message temporaire "exercice verrouillé"
   const [reorderMode, setReorderMode] = useState(false); // mode réorganisation de la suite de la séance
   const [pendingJump, setPendingJump] = useState(null); // blockId à activer dès que `steps` se recalcule
+
+  // Tant que la position exacte dans la séance (étape, phase, minuteur de repos) n'a pas
+  // fini d'être restaurée depuis le stockage, on affiche un petit chargement plutôt que de
+  // montrer brièvement "Série 1" avant que la vraie valeur ("Série 3/4") ne s'affiche.
+  const runtimeLoaded = stepIndexLoaded && phaseLoaded && restLoaded;
 
   const step = steps[stepIndex] || null;
   const block = step ? workout.blocks.find((b) => b.id === step.blockId) : null;
@@ -2252,14 +2204,14 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   // pour la bannière persistante affichée sur les autres onglets. Ne pilote rien ici :
   // WorkoutSession reste seul maître de son propre état, ceci n'est qu'un aperçu diffusé.
   useEffect(() => {
-    if (!onStatusChange) return;
+    if (!onStatusChange || !runtimeLoaded) return;
     onStatusChange({
       exerciseName: log?.name || "",
       elapsedSec,
       phase,
       restRemaining: rest ? rest.remainingSec : null,
     });
-  }, [onStatusChange, log?.name, elapsedSec, phase, rest?.remainingSec]);
+  }, [onStatusChange, runtimeLoaded, log?.name, elapsedSec, phase, rest?.remainingSec]);
 
   // Liste des exercices à venir (verrouillés) : un exercice par entrée (dédupliqué),
   // dans l'ordre de la séance, en excluant l'exercice actuellement actif.
@@ -2406,6 +2358,16 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
     }
   };
 
+  // Supprime les clés de progression propres à CETTE séance (étape, phase, minuteur de
+  // repos) une fois qu'elle est terminée ou annulée — la séance elle-même (`activeWorkout`)
+  // est déjà remise à null par App à ce moment-là, ceci ne fait que nettoyer le stockage.
+  const cleanupRuntimeStorage = () => {
+    ["gt_step_", "gt_phase_", "gt_rest_"].forEach((prefix) => {
+      window.storage.delete(`${prefix}${workout.id}`, false).catch(() => {});
+    });
+  };
+  const handleCancel = () => { cleanupRuntimeStorage(); onCancel(); };
+
   const finishWorkout = () => {
     const durationSec = Math.floor((Date.now() - workout.startedAt) / 1000);
     const session = {
@@ -2414,6 +2376,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
       blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId) })),
       exerciseLogs: workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
     };
+    cleanupRuntimeStorage();
     onFinish(session);
   };
 
@@ -2421,7 +2384,19 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
     return (
       <div className="px-4 pt-6 space-y-4">
         <EmptyState theme={theme} icon={Dumbbell} title="Programme vide" subtitle="Ajoute des exercices à ce programme avant de démarrer une séance." />
-        <BigButton theme={theme} onClick={onCancel}>Retour</BigButton>
+        <BigButton theme={theme} onClick={handleCancel}>Retour</BigButton>
+      </div>
+    );
+  }
+
+  // Tant que la position exacte de la séance n'a pas fini d'être restaurée depuis le
+  // stockage (juste après un rafraîchissement de page), on affiche un petit indicateur de
+  // chargement plutôt que l'exercice par défaut (Série 1) pendant une fraction de seconde.
+  if (!runtimeLoaded) {
+    return (
+      <div style={{ background: theme.bg }} className="gt-app-shell flex items-center justify-center">
+        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          style={{ width: 24, height: 24, borderRadius: 999, border: `3px solid ${theme.card2}`, borderTopColor: theme.accent }} />
       </div>
     );
   }
@@ -2431,7 +2406,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
       <SessionHeader
         theme={theme} programName={workout.programName} elapsedSec={elapsedSec}
         stepNumber={Math.min(stepIndex + 1, steps.length)} totalSteps={steps.length}
-        onCancel={onCancel} onEndClick={() => setConfirmEnd(true)}
+        onCancel={handleCancel} onEndClick={() => setConfirmEnd(true)}
       />
 
       <div className="px-4 pb-8 pt-4">
