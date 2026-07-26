@@ -10,7 +10,7 @@ import {
   Edit2, GripVertical, Moon, Sun, Search, Download, Upload, Copy,
   Flame, Calendar, Info, ChevronDown, RotateCcw, CheckCircle2, Circle,
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
-  Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User,
+  Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User, Lock, Zap,
 } from "lucide-react";
 
 /* ============================== STOCKAGE (localStorage) ============================== */
@@ -143,13 +143,13 @@ function computeGroupLetters(blocks) {
 }
 
 function normalizeProgram(p) {
-  if (p.blocks) return p;
+  if (p.blocks) return { ...p, absExercises: p.absExercises || [] };
   const blocks = (p.exercises || []).map((ex) => ({
     id: uid(),
     restSec: ex.rest || 90,
     exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes }],
   }));
-  return { id: p.id, name: p.name, color: p.color, blocks };
+  return { id: p.id, name: p.name, color: p.color, blocks, absExercises: p.absExercises || [] };
 }
 
 /* ============================== THEME ============================== */
@@ -244,6 +244,15 @@ const singleBlock = (name, series, reps, rest, notes = "") => ({
   id: uid(), restSec: rest, exercises: [{ id: uid(), name, series, reps, notes }],
 });
 
+// Bloc abdos par défaut, ajouté à la fin de chaque programme d'exemple. `unit: "sec"`
+// signifie que la valeur saisie pendant la séance est une DURÉE (secondes), pas des reps —
+// utilisé ici pour le gainage.
+const defaultAbsExercises = () => ([
+  { id: uid(), name: "Crunch poulie", series: 4, reps: 15, unit: "reps", restSec: 45 },
+  { id: uid(), name: "Relevé de jambes", series: 3, reps: 12, unit: "reps", restSec: 45 },
+  { id: uid(), name: "Gainage", series: 3, reps: 60, unit: "sec", restSec: 45 },
+]);
+
 const DEFAULT_PROGRAMS = [
   {
     id: uid(), name: "Pecs", color: "#FF5A36",
@@ -258,6 +267,7 @@ const DEFAULT_PROGRAMS = [
       },
       singleBlock("Dips lestés", 3, 10, 90),
     ],
+    absExercises: defaultAbsExercises(),
   },
   {
     id: uid(), name: "Épaules / Bras", color: "#FF9F1C",
@@ -272,6 +282,7 @@ const DEFAULT_PROGRAMS = [
         ],
       },
     ],
+    absExercises: defaultAbsExercises(),
   },
   {
     id: uid(), name: "Dos", color: "#30D5A6",
@@ -281,6 +292,7 @@ const DEFAULT_PROGRAMS = [
       singleBlock("Tirage horizontal poulie", 3, 12, 75),
       singleBlock("Soulevé de terre", 3, 6, 150),
     ],
+    absExercises: defaultAbsExercises(),
   },
   {
     id: uid(), name: "Jambes", color: "#5E5CE6",
@@ -290,6 +302,7 @@ const DEFAULT_PROGRAMS = [
       singleBlock("Leg curl", 3, 12, 60),
       singleBlock("Mollets debout", 4, 15, 45),
     ],
+    absExercises: [],
   },
 ];
 
@@ -502,7 +515,7 @@ export default function App() {
 
   useEffect(() => {
     if (!programsLoaded) return;
-    setPrograms((ps) => (ps.some((p) => !p.blocks) ? ps.map(normalizeProgram) : ps));
+    setPrograms((ps) => (ps.some((p) => !p.blocks || !p.absExercises) ? ps.map(normalizeProgram) : ps));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [programsLoaded]);
 
@@ -636,22 +649,36 @@ function usePersistentState_simple(key, initial) {
 }
 
 function makeWorkout(program) {
+  const mainBlocks = (program.blocks || []).map((block) => ({
+    id: uid(),
+    restSec: block.restSec || 90,
+    exerciseLogs: block.exercises.map((ex) => ({
+      exerciseId: ex.id,
+      name: ex.name,
+      targetReps: ex.reps,
+      targetUnit: ex.unit || "reps",
+      notes: ex.notes,
+      sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+    })),
+  }));
+  // Le bloc abdos est ajouté à la toute fin de la séance, un exercice = un bloc chacun
+  // (pas de biset ici), et marqué `isAbsBlock` pour que WorkoutSession sache afficher
+  // l'écran "Fin de séance · Abdominaux" au moment d'y arriver.
+  const absBlocks = (program.absExercises || []).map((ex) => ({
+    id: uid(),
+    restSec: ex.restSec || ex.rest || 45,
+    isAbsBlock: true,
+    exerciseLogs: [{
+      exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: ex.unit || "reps", notes: ex.notes || "",
+      sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+    }],
+  }));
   return {
     id: uid(),
     programId: program.id,
     programName: program.name,
     startedAt: Date.now(),
-    blocks: (program.blocks || []).map((block) => ({
-      id: uid(),
-      restSec: block.restSec || 90,
-      exerciseLogs: block.exercises.map((ex) => ({
-        exerciseId: ex.id,
-        name: ex.name,
-        targetReps: ex.reps,
-        notes: ex.notes,
-        sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
-      })),
-    })),
+    blocks: [...mainBlocks, ...absBlocks],
   };
 }
 
@@ -768,7 +795,9 @@ function ActiveSessionBanner({ theme, status, onTap }) {
         className="w-full flex items-center gap-3 rounded-2xl px-4 py-3 active:scale-[0.98] transition-transform"
         style={{ maxWidth: 448, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, boxShadow: `0 10px 30px -10px ${theme.accent}aa` }}
       >
-        <motion.span animate={{ opacity: [1, 0.4, 1] }} transition={{ repeat: Infinity, duration: 1.3 }} className="text-[17px] shrink-0">🔥</motion.span>
+        <motion.span animate={{ opacity: [1, 0.4, 1] }} transition={{ repeat: Infinity, duration: 1.3 }} className="shrink-0 flex items-center">
+          <Flame size={17} color="#fff" fill="#fff" />
+        </motion.span>
         <div className="flex-1 min-w-0 text-left">
           <p className="text-white font-bold text-[13px] truncate">
             Séance en cours{status?.exerciseName ? ` · ${status.exerciseName}` : ""}
@@ -817,16 +846,17 @@ function SubPageHeader({ theme, title, onBack }) {
   );
 }
 
+// Un seul point d'entrée par section. "Mon profil" n'a PAS sa propre ligne ici : c'est la
+// carte d'en-tête (ProfileAccountHeader, juste au-dessus de cette liste) qui joue ce rôle —
+// avoir les deux était le doublon signalé (voir l'explication dans la conversation).
 const PROFILE_MENU_ITEMS = [
-  { id: "myprofile", view: "myprofile", icon: User, label: "Mon profil", desc: "Aperçu rapide de ton activité" },
+  { id: "weight", view: "weight", icon: Scale, label: "Poids", desc: "Poids actuel, évolution, ajout, historique" },
   { id: "progress", view: "progress", icon: TrendingUp, label: "Progression", desc: "Graphiques, charges, évolution des performances" },
   { id: "history", view: "history", icon: HistoryIcon, label: "Historique séances", desc: "Revoir toutes tes séances passées" },
-  { id: "weight", view: "weight", icon: Scale, label: "Évolution du poids", desc: "Suivi, moyenne, tendance" },
   { id: "records", view: "records", icon: Trophy, label: "Records", desc: "Tes meilleures charges par exercice" },
-  { id: "goals", view: "weight", icon: Target, label: "Objectifs", desc: "Objectif de poids et estimation" },
+  { id: "settings", view: "settings", icon: Settings, label: "Paramètres", desc: "Thème, repos par défaut" },
   { id: "stats", view: "stats", icon: BarChart3, label: "Statistiques détaillées", desc: "Totaux, fréquence, heatmap, sauvegarde" },
   { id: "programs", view: "programs", icon: Dumbbell, label: "Mes programmes", desc: "Créer, modifier, organiser tes séances" },
-  { id: "settings", view: "settings", icon: Settings, label: "Paramètres", desc: "Thème, repos par défaut" },
 ];
 
 const GOALS = [
@@ -1360,7 +1390,7 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
 
 function ProgramsList({ theme, programs, setPrograms, onOpen, onStart }) {
   const addProgram = () => {
-    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, blocks: [] };
+    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, blocks: [], absExercises: [] };
     setPrograms((ps) => [...ps, p]);
     onOpen(p.id);
   };
@@ -1401,12 +1431,18 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(program?.name || "");
   const [showAdd, setShowAdd] = useState(false);
+  const [showAddAbs, setShowAddAbs] = useState(false);
   const [pairTarget, setPairTarget] = useState(null); // blockId currently pairing/extending
 
   if (!program) return null;
 
   const updateProgram = (fn) => setPrograms((ps) => ps.map((p) => (p.id === program.id ? fn({ ...p }) : p)));
   const setBlocks = (blocks) => updateProgram((p) => ({ ...p, blocks }));
+  const absExercises = program.absExercises || [];
+  const setAbsExercises = (list) => updateProgram((p) => ({ ...p, absExercises: list }));
+  const updateAbsExercise = (id, patch) => setAbsExercises(absExercises.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+  const removeAbsExercise = (id) => setAbsExercises(absExercises.filter((e) => e.id !== id));
+  const addAbsExercise = (ex) => setAbsExercises([...absExercises, ex]);
 
   const updateExerciseInBlock = (blockId, exId, patch) =>
     setBlocks(program.blocks.map((b) => (b.id === blockId ? { ...b, exercises: b.exercises.map((e) => (e.id === exId ? { ...e, ...patch } : e)) } : b)));
@@ -1512,6 +1548,28 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
         <Plus size={17} /> Ajouter un exercice
       </button>
 
+      {/* Bloc abdominaux : réalisé automatiquement à la fin de la séance (voir
+          WorkoutSession / phase "absIntro"). Liste à part de l'exercice courant plus haut :
+          chaque exercice est indépendant, avec ses propres séries, reps OU durée
+          (gainage), et repos — pas de biset ici, juste une liste simple réordonnable. */}
+      <div className="pt-2">
+        <SectionTitle theme={theme}>Bloc abdominaux · fin de séance</SectionTitle>
+        {absExercises.length === 0 ? (
+          <Card theme={theme}><EmptyState theme={theme} icon={Flame} title="Aucun exercice abdos" subtitle="Ajoute un bloc abdos à réaliser automatiquement à la fin de cette séance." /></Card>
+        ) : (
+          <Reorder.Group axis="y" values={absExercises} onReorder={setAbsExercises} className="space-y-2.5">
+            {absExercises.map((ex) => (
+              <Reorder.Item key={ex.id} value={ex}>
+                <AbsExerciseRow theme={theme} exercise={ex} onUpdate={(patch) => updateAbsExercise(ex.id, patch)} onRemove={() => removeAbsExercise(ex.id)} />
+              </Reorder.Item>
+            ))}
+          </Reorder.Group>
+        )}
+        <button onClick={() => setShowAddAbs(true)} className="w-full rounded-2xl py-3.5 mt-2.5 font-bold text-[14.5px] flex items-center justify-center gap-2 active:scale-[0.98] transition-transform" style={{ background: theme.card2, color: theme.accent, border: `1.5px dashed ${theme.border}` }}>
+          <Plus size={17} /> Ajouter un exercice abdos
+        </button>
+      </div>
+
       <button onClick={deleteProgram} className="w-full rounded-2xl py-3 font-semibold text-[13.5px] flex items-center justify-center gap-2 mt-6" style={{ color: theme.bad }}>
         <Trash2 size={14} /> Supprimer le programme
       </button>
@@ -1519,6 +1577,16 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
       <AnimatePresence>
         {showAdd && (
           <AddExerciseSheet theme={theme} onClose={() => setShowAdd(false)} onAdd={(ex) => { addNewExercise(ex); setShowAdd(false); }} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showAddAbs && (
+          <AddExerciseSheet
+            theme={theme} allowDuration title="Ajouter un exercice abdos"
+            onClose={() => setShowAddAbs(false)}
+            onAdd={(ex) => { addAbsExercise(ex); setShowAddAbs(false); }}
+          />
         )}
       </AnimatePresence>
 
@@ -1535,6 +1603,50 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// Ligne d'un exercice du bloc abdos : contrairement aux exercices normaux, chaque entrée
+// gère son propre repos (pas de bloc partagé) et peut être en reps OU en durée (gainage).
+function AbsExerciseRow({ theme, exercise, onUpdate, onRemove }) {
+  const [open, setOpen] = useState(false);
+  const isDuration = exercise.unit === "sec";
+  return (
+    <Card theme={theme} className="overflow-hidden" style={{ border: `1px solid ${theme.accent}33` }}>
+      <div className="flex items-center gap-2 p-3.5">
+        <GripVertical size={16} color={theme.textFaint} className="cursor-grab shrink-0" />
+        <button className="flex-1 text-left min-w-0" onClick={() => setOpen((o) => !o)}>
+          <p style={{ color: theme.text }} className="font-semibold text-[14.5px] truncate">{exercise.name}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">
+            {exercise.series} × {exercise.reps}{isDuration ? "s" : " reps"} · repos {exercise.restSec}s
+          </p>
+        </button>
+        <ChevronDown size={16} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} onClick={() => setOpen((o) => !o)} />
+      </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="px-3.5 pb-3.5 space-y-2.5" style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
+              <FieldRow theme={theme} label="Nom">
+                <input value={exercise.name} onChange={(e) => onUpdate({ name: e.target.value })} className="bg-transparent outline-none text-right flex-1" style={{ color: theme.text }} />
+              </FieldRow>
+              <div className="flex gap-2">
+                <Pill theme={theme} active={!isDuration} onClick={() => onUpdate({ unit: "reps" })}>Répétitions</Pill>
+                <Pill theme={theme} active={isDuration} onClick={() => onUpdate({ unit: "sec" })}>Durée</Pill>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <MiniStepper theme={theme} label="Séries" value={exercise.series} onChange={(v) => onUpdate({ series: v })} />
+                <MiniStepper theme={theme} label={isDuration ? "Secondes" : "Reps"} value={exercise.reps} step={isDuration ? 10 : 1} onChange={(v) => onUpdate({ reps: v })} />
+                <MiniStepper theme={theme} label="Repos" value={exercise.restSec} step={15} onChange={(v) => onUpdate({ restSec: v })} suffix="s" />
+              </div>
+              <button onClick={onRemove} className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: theme.bad }}>
+                <Trash2 size={12} /> Retirer des abdos
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Card>
   );
 }
 
@@ -1742,12 +1854,15 @@ const COMMON_EXERCISES = [
   "Élévations latérales", "Presse à cuisses", "Fentes", "Dips", "Gainage", "Hip thrust",
 ];
 
-function AddExerciseSheet({ theme, onClose, onAdd }) {
+function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title = "Ajouter un exercice" }) {
   const [name, setName] = useState("");
   const [series, setSeries] = useState(4);
+  const [unit, setUnit] = useState("reps"); // 'reps' | 'sec' (uniquement pertinent si allowDuration)
   const [reps, setReps] = useState(10);
   const [rest, setRest] = useState(90);
   const filtered = name ? COMMON_EXERCISES.filter((e) => e.toLowerCase().includes(name.toLowerCase())) : COMMON_EXERCISES.slice(0, 5);
+
+  const switchUnit = (u) => { setUnit(u); setReps(u === "sec" ? 30 : 10); };
 
   return (
     <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -1755,7 +1870,7 @@ function AddExerciseSheet({ theme, onClose, onAdd }) {
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
-        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">Ajouter un exercice</h3>
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">{title}</h3>
         <div className="relative mb-2">
           <Search size={14} color={theme.textFaint} className="absolute left-3 top-1/2 -translate-y-1/2" />
           <input autoFocus placeholder="Nom de l'exercice" value={name} onChange={(e) => setName(e.target.value)}
@@ -1768,12 +1883,18 @@ function AddExerciseSheet({ theme, onClose, onAdd }) {
             ))}
           </div>
         )}
+        {allowDuration && (
+          <div className="flex gap-2 mb-4">
+            <Pill theme={theme} active={unit === "reps"} onClick={() => switchUnit("reps")}>Répétitions</Pill>
+            <Pill theme={theme} active={unit === "sec"} onClick={() => switchUnit("sec")}>Durée (secondes)</Pill>
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-2 mb-5">
           <MiniStepper theme={theme} label="Séries" value={series} onChange={setSeries} />
-          <MiniStepper theme={theme} label="Reps" value={reps} onChange={setReps} />
+          <MiniStepper theme={theme} label={unit === "sec" ? "Secondes" : "Reps"} value={reps} step={unit === "sec" ? 10 : 1} onChange={setReps} />
           <MiniStepper theme={theme} label="Repos" value={rest} step={15} onChange={setRest} suffix="s" />
         </div>
-        <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), series, reps, rest, notes: "" })}>
+        <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), series, reps, rest, restSec: rest, unit, notes: "" })}>
           <Plus size={17} /> Ajouter
         </BigButton>
       </motion.div>
@@ -1819,6 +1940,7 @@ function buildSessionSteps(blocks) {
             exIndexInBlock,
             groupSize: block.exerciseLogs.length,
             isLastOfRound: exIndexInBlock === block.exerciseLogs.length - 1,
+            isAbs: !!block.isAbsBlock,
           });
         }
       });
@@ -2041,7 +2163,7 @@ function LastSessionCard({ theme, last, currentSet }) {
   if (!last) {
     return (
       <Card theme={theme} className="p-4 mb-4 flex items-center gap-2.5" style={{ background: `${theme.accent2}14`, border: `1px solid ${theme.accent2}33` }}>
-        <span className="text-[18px]">💪</span>
+        <IconBadge theme={theme} icon={Zap} size={32} iconSize={15} tone="accent" />
         <p style={{ color: theme.text }} className="text-[13.5px] font-semibold">Première fois sur cet exercice</p>
       </Card>
     );
@@ -2056,7 +2178,9 @@ function LastSessionCard({ theme, last, currentSet }) {
     <Card theme={theme} className="p-4 mb-4" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
       <div className="flex items-center gap-1.5 mb-2.5">
         <span style={{ color: theme.textFaint }} className="text-[10.5px] font-bold uppercase tracking-wide">Dernière séance</span>
-        <span style={{ color: theme.textMuted }} className="text-[11.5px]">📅 {fmtDate(last.session.date, { day: "numeric", month: "long", year: "numeric" })}</span>
+        <span style={{ color: theme.textMuted }} className="text-[11.5px] flex items-center gap-1">
+          <Calendar size={11} /> {fmtDate(last.session.date, { day: "numeric", month: "long", year: "numeric" })}
+        </span>
       </div>
       <div className="space-y-1 mb-1">
         {doneSets.length === 0 ? (
@@ -2091,7 +2215,7 @@ function ExerciseCardLocked({ theme, name, groupSize, letter, exIndexInBlock, to
       className="w-full text-left rounded-3xl p-4 flex items-center gap-3 active:scale-[0.99] transition-transform"
       style={{ background: "rgba(20,20,22,0.7)", border: `1px solid ${theme.border}`, opacity: 0.6 }}
     >
-      <span className="shrink-0 text-[17px]">🔒</span>
+      <Lock size={16} color={theme.textFaint} className="shrink-0" />
       <div className="flex-1 min-w-0">
         {groupSize > 1 && (
           <span className="text-[10px] font-extrabold mr-1.5" style={{ color: theme.textFaint }}>
@@ -2135,7 +2259,7 @@ function ReorderableBlockRow({ theme, block, onStartNow }) {
 }
 
 // --- Carte "exercice actif" : entièrement interactive (poids, reps, validation) ---------
-function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, round, sessions, onChangeSet, onValidate, onRename, onAddSet }) {
+function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, round, sessions, isAbs, onChangeSet, onValidate, onRename, onAddSet, onSkip, onPrev }) {
   const last = useMemo(() => lastPerformanceFor(sessions, log.name), [sessions, log.name]);
   const pr = useMemo(() => {
     let best = null;
@@ -2156,14 +2280,22 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
 
   const set = log.sets[round] || { weight: "", reps: "" };
   const totalRounds = log.sets.length;
+  const isDuration = log.targetUnit === "sec";
 
   return (
     <Card theme={theme} className="p-5">
-      {groupSize > 1 && (
-        <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-block mb-3" style={{ background: theme.accent, color: "#fff" }}>
-          {groupLabel(groupSize)} · {letter}{exIndexInBlock + 1}
-        </span>
-      )}
+      <div className="flex items-center gap-1.5 mb-3">
+        {groupSize > 1 && (
+          <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-block" style={{ background: theme.accent, color: "#fff" }}>
+            {groupLabel(groupSize)} · {letter}{exIndexInBlock + 1}
+          </span>
+        )}
+        {isAbs && (
+          <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-flex items-center gap-1" style={{ background: `${theme.accent}1f`, color: theme.accent }}>
+            <Flame size={11} /> Abdominaux
+          </span>
+        )}
+      </div>
 
       {editingName ? (
         <input
@@ -2181,8 +2313,8 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
       <p style={{ color: theme.accent }} className="text-[14px] font-bold mb-4">Série {round + 1} / {totalRounds}</p>
 
       <div className="flex items-center gap-2 flex-wrap mb-4">
-        <span className="px-3 py-1.5 rounded-full text-[12px] font-semibold" style={{ background: theme.card2, color: theme.textMuted }}>
-          🎯 {log.targetReps} reps cible
+        <span className="px-3 py-1.5 rounded-full text-[12px] font-semibold inline-flex items-center gap-1" style={{ background: theme.card2, color: theme.textMuted }}>
+          <Target size={12} /> {log.targetReps}{isDuration ? "s" : " reps"} cible
         </span>
         {pr && (
           <span className="px-3 py-1.5 rounded-full text-[12px] font-bold flex items-center gap-1" style={{ background: `${theme.accent2}22`, color: theme.accent2 }}>
@@ -2205,7 +2337,7 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
           deux cartes à la même hauteur. Aucune largeur fixe, aucun positionnement absolu. */}
       <div className="grid grid-cols-2 gap-3 mb-5 items-stretch">
         <BigNumberStepper theme={theme} label="Charge (kg)" value={set.weight} onChange={(v) => onChangeSet({ weight: v })} step={2.5} />
-        <BigNumberStepper theme={theme} label="Répétitions" value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={1} />
+        <BigNumberStepper theme={theme} label={isDuration ? "Durée (sec)" : "Répétitions"} value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={isDuration ? 5 : 1} />
       </div>
 
       <BigButton theme={theme} gradient onClick={onValidate}>
@@ -2215,6 +2347,19 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
       <button onClick={onAddSet} className="w-full text-center mt-3 text-[12.5px] font-semibold" style={{ color: theme.textMuted }}>
         + Ajouter une série bonus à cet exercice
       </button>
+
+      <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: `1px solid ${theme.border}` }}>
+        <button
+          onClick={onPrev || undefined} disabled={!onPrev}
+          className="text-[12px] font-semibold flex items-center gap-1"
+          style={{ color: onPrev ? theme.textMuted : theme.textFaint, opacity: onPrev ? 1 : 0.4 }}
+        >
+          <ChevronLeft size={13} /> Précédent
+        </button>
+        <button onClick={onSkip} className="text-[12px] font-semibold flex items-center gap-1" style={{ color: theme.textMuted }}>
+          Passer cet exercice <ChevronRight size={13} />
+        </button>
+      </div>
     </Card>
   );
 }
@@ -2240,6 +2385,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [lockedHint, setLockedHint] = useState(false); // message temporaire "exercice verrouillé"
   const [reorderMode, setReorderMode] = useState(false); // mode réorganisation de la suite de la séance
+  const [showAddExercise, setShowAddExercise] = useState(false); // "+ Ajouter un exercice" pendant la séance
   const [pendingJump, setPendingJump] = useState(null); // blockId à activer dès que `steps` se recalcule
 
   // Tant que la position exacte dans la séance (étape, phase, minuteur de repos) n'a pas
@@ -2385,11 +2531,15 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
 
   // Passe à l'étape suivante (série suivante ou exercice suivant). Appelé soit
   // automatiquement (fin du repos), soit manuellement ("Série suivante" / "Passer").
+  // Si on entre dans le bloc abdos (premier pas où isAbs passe de false à true), on
+  // affiche d'abord l'écran "Fin de séance · Abdominaux" plutôt que d'enchaîner directement.
   const goToNextStep = () => {
     stopRest();
-    if (stepIndex + 1 >= steps.length) { setPhase("done"); return; }
-    setStepIndex((i) => i + 1);
-    setPhase("set");
+    const nextIndex = stepIndex + 1;
+    if (nextIndex >= steps.length) { setPhase("done"); return; }
+    const enteringAbs = steps[nextIndex].isAbs && !steps[stepIndex]?.isAbs;
+    setStepIndex(nextIndex);
+    setPhase(enteringAbs ? "absIntro" : "set");
   };
 
   // Valide la série affichée à l'écran :
@@ -2408,6 +2558,35 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
     } else {
       goToNextStep();
     }
+  };
+
+  // Revenir à l'étape précédente (pour corriger/refaire), ou passer l'exercice actuel sans
+  // le valider — utile en particulier pour le bloc abdos (section 4 : "passer un exercice",
+  // "revenir en arrière"), mais disponible pour toute la séance par cohérence.
+  const goToPrevStep = () => {
+    if (stepIndex === 0) return;
+    stopRest();
+    setStepIndex((i) => Math.max(0, i - 1));
+    setPhase("set");
+  };
+  const skipCurrentExercise = () => goToNextStep();
+
+  // Ajoute un exercice supplémentaire, décidé pendant la séance (pas prévu au programme).
+  // Il rejoint la fin de `workout.blocks`, juste avant le bloc abdos s'il y en a un —
+  // ainsi il fait partie de la partie "musculation", pas des abdos de fin de séance.
+  const addExtraExercise = (ex) => {
+    const newBlock = {
+      id: uid(), restSec: ex.rest || restDefault,
+      exerciseLogs: [{
+        exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: "reps", notes: ex.notes || "",
+        sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+      }],
+    };
+    setWorkout((w) => {
+      const firstAbsIdx = w.blocks.findIndex((b) => b.isAbsBlock);
+      if (firstAbsIdx === -1) return { ...w, blocks: [...w.blocks, newBlock] };
+      return { ...w, blocks: [...w.blocks.slice(0, firstAbsIdx), newBlock, ...w.blocks.slice(firstAbsIdx)] };
+    });
   };
 
   // Supprime les clés de progression propres à CETTE séance (étape, phase, minuteur de
@@ -2433,7 +2612,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
     const session = {
       id: workout.id, programId: workout.programId, programName: workout.programName,
       date: todayISO(), startedAt: workout.startedAt, durationSec, tonnage, totalSets,
-      blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId) })),
+      blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId), isAbsBlock: !!b.isAbsBlock })),
       exerciseLogs: workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
     };
     onFinish(session);
@@ -2501,19 +2680,54 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
               </p>
               <BigButton theme={theme} gradient onClick={finishWorkout}><Save size={17} /> Enregistrer la séance</BigButton>
             </motion.div>
+          ) : phase === "absIntro" ? (
+            <motion.div key="absIntro" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="pt-6 text-center">
+              <div className="rounded-full flex items-center justify-center mx-auto mb-4" style={{ width: 72, height: 72, background: `${theme.accent}1f` }}>
+                <Flame size={30} color={theme.accent} />
+              </div>
+              <h2 style={{ color: theme.text }} className="text-[21px] font-extrabold mb-1">Fin de séance · Abdominaux</h2>
+              <p style={{ color: theme.textMuted }} className="text-[13px] mb-5">Dernière étape avant de terminer.</p>
+              <Card theme={theme} className="p-2 mb-5 text-left">
+                {workout.blocks.filter((b) => b.isAbsBlock).map((b, i) => {
+                  const el = b.exerciseLogs[0];
+                  return (
+                    <div key={b.id} className="px-3 py-2.5 flex items-center justify-between" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
+                      <p style={{ color: theme.text }} className="font-semibold text-[13.5px]">{el.name}</p>
+                      <p style={{ color: theme.textMuted }} className="text-[12px]">{el.sets.length} × {el.targetReps}{el.targetUnit === "sec" ? "s" : ""}</p>
+                    </div>
+                  );
+                })}
+              </Card>
+              <BigButton theme={theme} gradient onClick={() => setPhase("set")}><Play size={17} fill="#fff" /> Commencer les abdos</BigButton>
+            </motion.div>
           ) : (
             step && log && (
               <motion.div key={stepIndex} initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }} transition={{ duration: 0.2 }}>
                 <ExerciseCardActive
                   theme={theme} log={log} groupSize={step.groupSize} letter={letters[block.id]}
-                  exIndexInBlock={step.exIndexInBlock} round={step.round} sessions={sessions}
+                  exIndexInBlock={step.exIndexInBlock} round={step.round} sessions={sessions} isAbs={step.isAbs}
                   onChangeSet={updateCurrentSet} onValidate={validateCurrentSet}
                   onRename={renameCurrentExercise} onAddSet={addBonusSetToCurrentExercise}
+                  onSkip={skipCurrentExercise} onPrev={stepIndex > 0 ? goToPrevStep : null}
                 />
               </motion.div>
             )
           )}
         </AnimatePresence>
+
+        {/* "+ Ajouter un exercice" : disponible à tout moment pendant la séance. Le nouvel
+            exercice rejoint la fin de la partie musculation (avant les abdos s'il y en a),
+            devient un exercice normal (poids/reps/séries/repos), et sera sauvegardé dans
+            l'historique / les stats / les records comme n'importe quel autre à la fin. */}
+        {phase !== "done" && (
+          <button
+            onClick={() => setShowAddExercise(true)}
+            className="w-full rounded-2xl py-3.5 mt-4 font-bold text-[14px] flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+            style={{ background: theme.card2, color: theme.accent, border: `1.5px dashed ${theme.border}` }}
+          >
+            <Plus size={16} /> Ajouter un exercice
+          </button>
+        )}
 
         {/* Aperçu de la suite de la séance : verrouillé par défaut, non interactif.
             Le bouton "Modifier l'ordre" bascule vers un mode où l'utilisateur peut
@@ -2557,8 +2771,8 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
         {lockedHint && (
           <motion.div initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }}
             className="fixed left-0 right-0 bottom-6 flex justify-center z-40 px-6 pointer-events-none" style={{ maxWidth: 480, margin: "0 auto" }}>
-            <div className="rounded-2xl px-4 py-3 text-center text-[13px] font-semibold" style={{ background: theme.card, color: theme.text, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}>
-              🔒 Terminez l'exercice actuel avant de modifier celui-ci.
+            <div className="rounded-2xl px-4 py-3 flex items-center gap-2 text-[13px] font-semibold" style={{ background: theme.card, color: theme.text, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}>
+              <Lock size={14} color={theme.textMuted} className="shrink-0" /> Terminez l'exercice actuel avant de modifier celui-ci.
             </div>
           </motion.div>
         )}
@@ -2568,6 +2782,16 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
         {confirmEnd && (
           <ConfirmSheet theme={theme} title="Terminer la séance ?" subtitle={`${totalSets} séries · ${Math.round(tonnage).toLocaleString("fr-FR")} kg de tonnage`}
             confirmLabel="Terminer" onConfirm={finishWorkout} onCancel={() => setConfirmEnd(false)} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showAddExercise && (
+          <AddExerciseSheet
+            theme={theme} title="Ajouter un exercice à la séance"
+            onClose={() => setShowAddExercise(false)}
+            onAdd={(ex) => { addExtraExercise(ex); setShowAddExercise(false); }}
+          />
         )}
       </AnimatePresence>
     </div>
@@ -2694,6 +2918,11 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate, onEdit }
                     {groupLabel(logs.length)}
                   </span>
                 )}
+                {b.isAbsBlock && (
+                  <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-flex items-center gap-1 mb-3" style={{ background: `${theme.accent}1f`, color: theme.accent }}>
+                    <Flame size={11} /> Abdominaux
+                  </span>
+                )}
                 <div className={isGroup ? "space-y-3" : ""}>
                   {logs.map((el, i) => (
                     <div key={el.exerciseId} className={isGroup && i > 0 ? "pt-3" : ""} style={isGroup && i > 0 ? { borderTop: `1px dashed ${theme.border}` } : {}}>
@@ -2705,7 +2934,7 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate, onEdit }
                         {el.sets.map((s, si) => (
                           <div key={si} className="flex items-center justify-between text-[13px]" style={{ color: s.done ? theme.text : theme.textFaint }}>
                             <span>Série {si + 1}</span>
-                            <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}</span>
+                            <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}{el.targetUnit === "sec" ? "s" : ""}</span>
                           </div>
                         ))}
                       </div>
