@@ -7,9 +7,10 @@ import {
 import {
   Home, Dumbbell, History as HistoryIcon, TrendingUp, Scale, BarChart3,
   Plus, X, Check, ChevronRight, ChevronLeft, Play, Pause, Timer, Trash2,
-  Edit2, GripVertical, Moon, Sun, Award, Search, Download, Upload, Copy,
+  Edit2, GripVertical, Moon, Sun, Search, Download, Upload, Copy,
   Flame, Calendar, Info, ChevronDown, RotateCcw, CheckCircle2, Circle,
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
+  Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User,
 } from "lucide-react";
 
 /* ============================== UTILITIES ============================== */
@@ -42,6 +43,12 @@ const epley1RM = (weight, reps) => {
   if (!weight || !reps) return 0;
   if (reps === 1) return weight;
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
+};
+
+// Formate un nombre sans décimale inutile (80 au lieu de 80.0, mais 82.5 conservé).
+const fmtNum = (n) => {
+  const num = Number(n) || 0;
+  return Number.isInteger(num) ? String(num) : String(Math.round(num * 10) / 10);
 };
 
 const vibrate = (pattern) => {
@@ -80,6 +87,40 @@ function linRegSlope(points) {
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
   return { slope, intercept };
+}
+
+/* ============================== BLOCKS (single / superset / triset / circuit) ============================== */
+// A program is made of `blocks`. Each block holds 1..N exercises.
+// 1 exercise = normal exercise, 2 = superset (biset), 3 = triset, 4+ = circuit.
+// The rest timer lives on the block, not on individual exercises: it only starts
+// after the LAST exercise of the block finishes its set for that round.
+
+const flattenExercises = (blocks) => (blocks || []).flatMap((b) => b.exercises);
+
+function groupLabel(n) {
+  if (n <= 1) return null;
+  if (n === 2) return "Biset";
+  if (n === 3) return "Triset";
+  return "Circuit";
+}
+
+function computeGroupLetters(blocks) {
+  const map = {};
+  let counter = 0;
+  (blocks || []).forEach((b) => {
+    if (b.exercises.length > 1) { map[b.id] = String.fromCharCode(65 + counter); counter += 1; }
+  });
+  return map;
+}
+
+function normalizeProgram(p) {
+  if (p.blocks) return p;
+  const blocks = (p.exercises || []).map((ex) => ({
+    id: uid(),
+    restSec: ex.rest || 90,
+    exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes }],
+  }));
+  return { id: p.id, name: p.name, color: p.color, blocks };
 }
 
 /* ============================== THEME ============================== */
@@ -129,41 +170,55 @@ function usePersistentState(key, initial) {
 
 /* ============================== DEFAULT DATA ============================== */
 
+const singleBlock = (name, series, reps, rest, notes = "") => ({
+  id: uid(), restSec: rest, exercises: [{ id: uid(), name, series, reps, notes }],
+});
+
 const DEFAULT_PROGRAMS = [
   {
     id: uid(), name: "Pecs", color: "#FF5A36",
-    exercises: [
-      { id: uid(), name: "Développé couché barre", series: 4, reps: 8, rest: 120, notes: "" },
-      { id: uid(), name: "Développé incliné haltères", series: 3, reps: 10, rest: 90, notes: "" },
-      { id: uid(), name: "Écarté poulie vis-à-vis", series: 3, reps: 12, rest: 60, notes: "" },
-      { id: uid(), name: "Dips lestés", series: 3, reps: 10, rest: 90, notes: "" },
+    blocks: [
+      singleBlock("Développé couché barre", 4, 8, 120),
+      {
+        id: uid(), restSec: 90,
+        exercises: [
+          { id: uid(), name: "Développé incliné haltères", series: 3, reps: 10, notes: "" },
+          { id: uid(), name: "Écarté poulie vis-à-vis", series: 3, reps: 12, notes: "" },
+        ],
+      },
+      singleBlock("Dips lestés", 3, 10, 90),
     ],
   },
   {
     id: uid(), name: "Épaules / Bras", color: "#FF9F1C",
-    exercises: [
-      { id: uid(), name: "Développé militaire", series: 4, reps: 8, rest: 120, notes: "" },
-      { id: uid(), name: "Élévations latérales", series: 4, reps: 12, rest: 60, notes: "" },
-      { id: uid(), name: "Curl barre EZ", series: 3, reps: 10, rest: 75, notes: "" },
-      { id: uid(), name: "Extension triceps poulie", series: 3, reps: 12, rest: 60, notes: "" },
+    blocks: [
+      singleBlock("Développé militaire", 4, 8, 120),
+      singleBlock("Élévations latérales", 4, 12, 60),
+      {
+        id: uid(), restSec: 75,
+        exercises: [
+          { id: uid(), name: "Curl barre EZ", series: 3, reps: 10, notes: "" },
+          { id: uid(), name: "Extension triceps poulie", series: 3, reps: 12, notes: "" },
+        ],
+      },
     ],
   },
   {
     id: uid(), name: "Dos", color: "#30D5A6",
-    exercises: [
-      { id: uid(), name: "Tractions lestées", series: 4, reps: 8, rest: 120, notes: "" },
-      { id: uid(), name: "Rowing barre", series: 4, reps: 8, rest: 100, notes: "" },
-      { id: uid(), name: "Tirage horizontal poulie", series: 3, reps: 12, rest: 75, notes: "" },
-      { id: uid(), name: "Soulevé de terre", series: 3, reps: 6, rest: 150, notes: "" },
+    blocks: [
+      singleBlock("Tractions lestées", 4, 8, 120),
+      singleBlock("Rowing barre", 4, 8, 100),
+      singleBlock("Tirage horizontal poulie", 3, 12, 75),
+      singleBlock("Soulevé de terre", 3, 6, 150),
     ],
   },
   {
     id: uid(), name: "Jambes", color: "#5E5CE6",
-    exercises: [
-      { id: uid(), name: "Squat barre", series: 4, reps: 8, rest: 150, notes: "" },
-      { id: uid(), name: "Presse à cuisses", series: 4, reps: 10, rest: 100, notes: "" },
-      { id: uid(), name: "Leg curl", series: 3, reps: 12, rest: 60, notes: "" },
-      { id: uid(), name: "Mollets debout", series: 4, reps: 15, rest: 45, notes: "" },
+    blocks: [
+      singleBlock("Squat barre", 4, 8, 150),
+      singleBlock("Presse à cuisses", 4, 10, 100),
+      singleBlock("Leg curl", 3, 12, 60),
+      singleBlock("Mollets debout", 4, 15, 45),
     ],
   },
 ];
@@ -285,6 +340,42 @@ function EmptyState({ theme, icon: Icon, title, subtitle }) {
   );
 }
 
+// Badge circulaire coloré autour d'une icône : utilisé partout (nav, stats, en-têtes) pour
+// donner une identité visuelle cohérente et plus énergique qu'une icône nue.
+function IconBadge({ theme, icon: Icon, size = 34, iconSize = 16, tone = "accent", filled = false, className = "" }) {
+  const colors = {
+    accent: filled ? `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` : `${theme.accent}1f`,
+    good: filled ? theme.good : `${theme.good}22`,
+    muted: theme.card2,
+  };
+  const iconColor = filled ? "#fff" : tone === "muted" ? theme.textMuted : tone === "good" ? theme.good : theme.accent;
+  return (
+    <div
+      className={`flex items-center justify-center shrink-0 ${className}`}
+      style={{ width: size, height: size, borderRadius: size * 0.32, background: colors[tone] || colors.accent }}
+    >
+      <Icon size={iconSize} color={iconColor} strokeWidth={2.3} />
+    </div>
+  );
+}
+
+// Petit logo maison (éclair dans une flamme stylisée) : identité de marque réutilisable,
+// pas une simple icône lucide — sert d'écran de chargement et de repère visuel de l'app.
+function AppLogoMark({ size = 40 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" fill="none">
+      <defs>
+        <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#FF5A36" />
+          <stop offset="100%" stopColor="#FF9F1C" />
+        </linearGradient>
+      </defs>
+      <rect x="1" y="1" width="38" height="38" rx="12" fill="url(#logoGrad)" />
+      <path d="M22 6 L11 22h7l-2 12 13-17h-8l1-11z" fill="#fff" />
+    </svg>
+  );
+}
+
 /* ============================== APP ROOT ============================== */
 
 export default function App() {
@@ -298,92 +389,113 @@ export default function App() {
   const [settings, setSettings, settingsLoaded] = usePersistentState("gt_settings_v1", {
     goalWeight: null, lastProgramIndex: -1, restDefault: 90,
   });
+  // Profil "compte" local à cet appareil (voir la note sur l'authentification dans la
+  // conversation) : { name, email, age, height, goal, level, createdAt } | null.
+  const [userProfile, setUserProfile, profileLoaded] = usePersistentState("gt_profile_v1", null);
 
-  const [tab, setTab] = useState("dashboard");
-  const [subview, setSubview] = useState(null); // {type, id}
+  // Navigation : seulement 4 onglets. Le sous-détail (programme ouvert, séance ouverte...)
+  // vit désormais localement DANS chaque écran concerné (ex: ProfileHub), plus au niveau App.
+  const [tab, setTab] = useState("dashboard"); // 'dashboard' | 'workout' | 'progress' | 'profile'
   const [activeWorkout, setActiveWorkout] = useState(null);
 
-  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded;
+  // "État global de séance" (léger) : un instantané en lecture seule de ce qui se passe
+  // dans la séance en cours (exercice, chrono, phase, repos restant), mis à jour par
+  // WorkoutSession via `onStatusChange`. Sert à afficher la bannière persistante et le
+  // badge orange dans la nav quand l'utilisateur est sur un AUTRE onglet — WorkoutSession
+  // reste lui-même toujours monté (voir plus bas), ce n'est donc qu'un aperçu, pas la
+  // source de vérité (qui reste dans WorkoutSession/activeWorkout).
+  const [sessionStatus, setSessionStatus] = useState(null);
 
-  const goTab = (t) => { setTab(t); setSubview(null); };
+  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded;
+
+  useEffect(() => {
+    if (!programsLoaded) return;
+    setPrograms((ps) => (ps.some((p) => !p.blocks) ? ps.map(normalizeProgram) : ps));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programsLoaded]);
+
+  // Démarre une séance ET bascule vers l'onglet "Séance en cours" pour la voir tout de suite.
+  const startWorkout = (program) => { setActiveWorkout(makeWorkout(program)); setTab("workout"); };
+  const endWorkout = () => { setActiveWorkout(null); setSessionStatus(null); };
+
+  // Supprime le compte ET toutes les données locales associées (programmes, historique,
+  // poids, réglages) — voir <SettingsPage/>, "Zone de danger". Irréversible.
+  const deleteAccount = () => {
+    endWorkout();
+    setUserProfile(null);
+    setPrograms(DEFAULT_PROGRAMS);
+    setSessions([]);
+    setWeightEntries([]);
+    setSettings({ goalWeight: null, lastProgramIndex: -1, restDefault: 90 });
+    setTab("dashboard");
+  };
+
 
   if (!dataLoaded) {
     return (
-      <div style={{ background: theme.bg, height: "100%" }} className="flex items-center justify-center">
+      <div style={{ background: theme.bg }} className="flex flex-col items-center justify-center gap-5 gt-app-shell">
+        <style>{`.gt-app-shell { height: 100vh; height: 100dvh; }`}</style>
+        <motion.div animate={{ scale: [1, 1.06, 1] }} transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}>
+          <AppLogoMark size={52} />
+        </motion.div>
         <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-          style={{ width: 28, height: 28, borderRadius: 999, border: `3px solid ${theme.card2}`, borderTopColor: theme.accent }} />
+          style={{ width: 24, height: 24, borderRadius: 999, border: `3px solid ${theme.card2}`, borderTopColor: theme.accent }} />
       </div>
     );
   }
 
+  // Le contenu "normal" des onglets est masqué (pas détruit) uniquement pendant qu'on
+  // regarde l'onglet Séance ET qu'une séance est active — sinon il reste affiché normalement.
+  const showingActiveWorkout = !!(activeWorkout && tab === "workout");
+
   return (
     <div
-      style={{ background: theme.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif", minHeight: "100%", maxWidth: 480, margin: "0 auto", position: "relative" }}
-      className="w-full flex flex-col"
+      style={{ background: theme.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif", maxWidth: 480, margin: "0 auto", position: "relative" }}
+      className="w-full flex flex-col gt-app-shell"
     >
+      {/* `height: 100dvh` (avec repli 100vh) ancre l'app à la vraie hauteur d'écran, voir
+          l'historique de cette conversation pour le détail du bug que ça corrige. */}
+      <style>{`.gt-app-shell { height: 100vh; height: 100dvh; }`}</style>
       <div className="flex-1 overflow-y-auto pb-28" style={{ WebkitOverflowScrolling: "touch" }}>
-        <AnimatePresence mode="wait">
-          {activeWorkout ? (
-            <motion.div key="workout" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <WorkoutSession
-                theme={theme} workout={activeWorkout} setWorkout={setActiveWorkout}
-                sessions={sessions}
-                onFinish={(session) => {
-                  setSessions((s) => [session, ...s]);
-                  setActiveWorkout(null);
-                  setTab("dashboard");
-                }}
-                onCancel={() => setActiveWorkout(null)}
-                restDefault={settings.restDefault}
-              />
-            </motion.div>
-          ) : (
-            <motion.div key={tab + (subview ? subview.type + subview.id : "")} initial={{ opacity: 0, x: prefersReduced ? 0 : 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}>
-              <TopBar theme={theme} tab={tab} isDark={isDark} setIsDark={setIsDark} />
+        {/* La séance en cours reste TOUJOURS montée tant qu'elle existe (jamais démontée en
+            changeant d'onglet) : seule sa visibilité CSS change. Ses timers (chrono de
+            séance, minuteur de repos) continuent donc de tourner normalement même quand
+            on navigue vers Accueil / Progression / Profil. */}
+        {activeWorkout && (
+          <div style={{ display: showingActiveWorkout ? "block" : "none" }}>
+            <WorkoutSession
+              workout={activeWorkout} setWorkout={setActiveWorkout}
+              sessions={sessions}
+              onFinish={(session) => { setSessions((s) => [session, ...s]); endWorkout(); setTab("dashboard"); }}
+              onCancel={endWorkout}
+              restDefault={settings.restDefault}
+              onStatusChange={setSessionStatus}
+            />
+          </div>
+        )}
+
+        {!showingActiveWorkout && (
+          <AnimatePresence mode="wait">
+            <motion.div key={tab} initial={{ opacity: 0, x: prefersReduced ? 0 : 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}>
+              {tab !== "profile" && <TopBar theme={theme} tab={tab} isDark={isDark} setIsDark={setIsDark} />}
               {tab === "dashboard" && (
                 <Dashboard
                   theme={theme} programs={programs} sessions={sessions} weightEntries={weightEntries}
+                  settings={settings} setSettings={setSettings} onStart={startWorkout}
+                />
+              )}
+              {tab === "workout" && !activeWorkout && (
+                <WorkoutStartScreen theme={theme} onGoToDashboard={() => setTab("dashboard")} />
+              )}
+              {tab === "profile" && (
+                <ProfileHub
+                  theme={theme} isDark={isDark} setIsDark={setIsDark}
+                  programs={programs} setPrograms={setPrograms}
+                  sessions={sessions} setSessions={setSessions}
+                  weightEntries={weightEntries} setWeightEntries={setWeightEntries}
                   settings={settings} setSettings={setSettings}
-                  onStart={(program) => setActiveWorkout(makeWorkout(program))}
-                />
-              )}
-              {tab === "programs" && !subview && (
-                <ProgramsList
-                  theme={theme} programs={programs} setPrograms={setPrograms}
-                  onOpen={(id) => setSubview({ type: "program", id })}
-                  onStart={(program) => setActiveWorkout(makeWorkout(program))}
-                />
-              )}
-              {tab === "programs" && subview?.type === "program" && (
-                <ProgramEditor
-                  theme={theme} program={programs.find((p) => p.id === subview.id)}
-                  setPrograms={setPrograms} onBack={() => setSubview(null)}
-                  onStart={(program) => setActiveWorkout(makeWorkout(program))}
-                />
-              )}
-              {tab === "history" && !subview && (
-                <HistoryList theme={theme} sessions={sessions} onOpen={(id) => setSubview({ type: "session", id })} />
-              )}
-              {tab === "history" && subview?.type === "session" && (
-                <SessionDetail
-                  theme={theme} session={sessions.find((s) => s.id === subview.id)}
-                  onBack={() => setSubview(null)}
-                  onDelete={(id) => { setSessions((s) => s.filter((x) => x.id !== id)); setSubview(null); }}
-                  onDuplicate={(session) => {
-                    const prog = programs.find((p) => p.id === session.programId) || { id: session.programId, name: session.programName, exercises: session.exerciseLogs.map((el) => ({ id: el.exerciseId, name: el.name, series: el.sets.length, reps: 10, rest: 90, notes: "" })) };
-                    setActiveWorkout(makeWorkout(prog));
-                    setTab("dashboard"); setSubview(null);
-                  }}
-                />
-              )}
-              {tab === "progress" && (
-                <ProgressPage theme={theme} sessions={sessions} programs={programs} />
-              )}
-              {tab === "weight" && (
-                <WeightPage theme={theme} entries={weightEntries} setEntries={setWeightEntries} settings={settings} setSettings={setSettings} />
-              )}
-              {tab === "stats" && (
-                <StatsPage theme={theme} sessions={sessions} programs={programs}
+                  userProfile={userProfile} setUserProfile={setUserProfile} onDeleteAccount={deleteAccount}
+                  onStartProgram={startWorkout}
                   onExport={() => exportBackup(programs, sessions, weightEntries, settings)}
                   onImport={(data) => {
                     if (data.programs) setPrograms(data.programs);
@@ -394,10 +506,19 @@ export default function App() {
                 />
               )}
             </motion.div>
-          )}
-        </AnimatePresence>
+          </AnimatePresence>
+        )}
       </div>
-      {!activeWorkout && <BottomNav theme={theme} tab={tab} setTab={goTab} />}
+
+      {/* Bannière persistante : visible sur n'importe quel autre onglet tant qu'une séance
+          tourne, avec le nom de l'exercice en cours et le chrono en direct. */}
+      <AnimatePresence>
+        {activeWorkout && !showingActiveWorkout && (
+          <ActiveSessionBanner theme={theme} status={sessionStatus} onTap={() => setTab("workout")} />
+        )}
+      </AnimatePresence>
+
+      <BottomNav theme={theme} tab={tab} setTab={setTab} activeWorkout={!!activeWorkout} />
     </div>
   );
 }
@@ -428,13 +549,38 @@ function makeWorkout(program) {
     programId: program.id,
     programName: program.name,
     startedAt: Date.now(),
-    exerciseLogs: program.exercises.map((ex) => ({
-      exerciseId: ex.id,
-      name: ex.name,
-      restSec: ex.rest || 90,
-      targetReps: ex.reps,
-      notes: ex.notes,
-      sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+    blocks: (program.blocks || []).map((block) => ({
+      id: uid(),
+      restSec: block.restSec || 90,
+      exerciseLogs: block.exercises.map((ex) => ({
+        exerciseId: ex.id,
+        name: ex.name,
+        targetReps: ex.reps,
+        notes: ex.notes,
+        sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+      })),
+    })),
+  };
+}
+
+function programFromSession(session) {
+  if (session.blocks && session.blocks.length) {
+    return {
+      id: session.programId, name: session.programName,
+      blocks: session.blocks.map((b) => ({
+        id: uid(), restSec: b.restSec || 90,
+        exercises: b.exerciseIds.map((exId) => {
+          const el = session.exerciseLogs.find((e) => e.exerciseId === exId) || {};
+          return { id: exId, name: el.name || "Exercice", series: (el.sets || []).length || 3, reps: el.targetReps || 10, notes: el.notes || "" };
+        }),
+      })),
+    };
+  }
+  return {
+    id: session.programId, name: session.programName,
+    blocks: session.exerciseLogs.map((el) => ({
+      id: uid(), restSec: 90,
+      exercises: [{ id: el.exerciseId, name: el.name, series: el.sets.length || 3, reps: el.targetReps || 10, notes: "" }],
     })),
   };
 }
@@ -452,14 +598,20 @@ function exportBackup(programs, sessions, weightEntries, settings) {
 /* ============================== TOP BAR & NAV ============================== */
 
 const TAB_TITLES = {
-  dashboard: "Aujourd'hui", programs: "Programmes", history: "Historique",
-  progress: "Progression", weight: "Poids", stats: "Statistiques",
+  dashboard: "Aujourd'hui", workout: "Séance en cours",
+};
+
+const TAB_ICONS = {
+  dashboard: Home, workout: Flame,
 };
 
 function TopBar({ theme, tab, isDark, setIsDark }) {
   return (
     <div className="flex items-center justify-between px-5 pt-4 pb-2">
-      <h1 style={{ color: theme.text }} className="text-[28px] font-extrabold tracking-tight">{TAB_TITLES[tab]}</h1>
+      <div className="flex items-center gap-2.5">
+        <IconBadge theme={theme} icon={TAB_ICONS[tab]} size={34} iconSize={16} filled />
+        <h1 style={{ color: theme.text }} className="text-[26px] font-extrabold tracking-tight">{TAB_TITLES[tab]}</h1>
+      </div>
       <button onClick={() => setIsDark((d) => !d)} className="active:scale-90 transition-transform rounded-full flex items-center justify-center" style={{ width: 38, height: 38, background: theme.card2, border: `1px solid ${theme.border}` }}>
         {isDark ? <Sun size={17} color={theme.text} /> : <Moon size={17} color={theme.text} />}
       </button>
@@ -467,14 +619,13 @@ function TopBar({ theme, tab, isDark, setIsDark }) {
   );
 }
 
-function BottomNav({ theme, tab, setTab }) {
+// Seulement 3 onglets, comme demandé. "Séance" reste en orange tant qu'une séance est
+// active, même si un autre onglet est sélectionné (petit point qui pulse en plus du badge).
+function BottomNav({ theme, tab, setTab, activeWorkout }) {
   const items = [
     { id: "dashboard", icon: Home, label: "Accueil" },
-    { id: "programs", icon: Dumbbell, label: "Programmes" },
-    { id: "history", icon: HistoryIcon, label: "Historique" },
-    { id: "progress", icon: TrendingUp, label: "Progrès" },
-    { id: "weight", icon: Scale, label: "Poids" },
-    { id: "stats", icon: BarChart3, label: "Stats" },
+    { id: "workout", icon: Flame, label: "Séance" },
+    { id: "profile", icon: User, label: "Profil" },
   ];
   return (
     <div className="fixed bottom-0 left-0 right-0 flex justify-center pointer-events-none z-50">
@@ -484,11 +635,23 @@ function BottomNav({ theme, tab, setTab }) {
           style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.3)" }}
         >
           {items.map((it) => {
-            const active = tab === it.id;
+            const selected = tab === it.id;
+            const isWorkoutBtn = it.id === "workout";
+            const highlighted = selected || (isWorkoutBtn && activeWorkout);
             return (
-              <button key={it.id} onClick={() => setTab(it.id)} className="flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 rounded-2xl transition-all active:scale-90" style={{ background: active ? "rgba(255,90,54,0.12)" : "transparent" }}>
-                <it.icon size={19} color={active ? theme.accent : theme.textMuted} strokeWidth={active ? 2.4 : 2} />
-                <span style={{ color: active ? theme.accent : theme.textMuted, fontSize: 9.5 }} className="font-semibold">{it.label}</span>
+              <button key={it.id} onClick={() => setTab(it.id)} className="relative flex-1 flex flex-col items-center justify-center gap-1 py-1.5 rounded-2xl transition-all active:scale-90">
+                {highlighted ? (
+                  <IconBadge theme={theme} icon={it.icon} size={26} iconSize={14} filled />
+                ) : (
+                  <it.icon size={19} color={theme.textMuted} strokeWidth={2} />
+                )}
+                {isWorkoutBtn && activeWorkout && !selected && (
+                  <motion.span
+                    animate={{ opacity: [1, 0.35, 1] }} transition={{ repeat: Infinity, duration: 1.3 }}
+                    className="absolute rounded-full" style={{ top: 2, right: "26%", width: 7, height: 7, background: theme.accent, boxShadow: `0 0 0 2px ${theme.tabBg}` }}
+                  />
+                )}
+                <span style={{ color: highlighted ? theme.accent : theme.textMuted, fontSize: 9.5 }} className="font-semibold">{it.label}</span>
               </button>
             );
           })}
@@ -497,6 +660,577 @@ function BottomNav({ theme, tab, setTab }) {
     </div>
   );
 }
+
+// Bannière persistante affichée sur les AUTRES onglets tant qu'une séance est active :
+// nom de l'exercice en cours + chrono en direct, tap pour revenir directement dessus.
+function ActiveSessionBanner({ theme, status, onTap }) {
+  return (
+    <motion.button
+      onClick={onTap}
+      initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }}
+      transition={{ type: "spring", damping: 26, stiffness: 300 }}
+      className="fixed left-0 right-0 z-40 flex justify-center px-3 pointer-events-auto"
+      style={{ maxWidth: 480, margin: "0 auto", bottom: 92 }}
+    >
+      <div
+        className="w-full flex items-center gap-3 rounded-2xl px-4 py-3 active:scale-[0.98] transition-transform"
+        style={{ maxWidth: 448, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, boxShadow: `0 10px 30px -10px ${theme.accent}aa` }}
+      >
+        <motion.span animate={{ opacity: [1, 0.4, 1] }} transition={{ repeat: Infinity, duration: 1.3 }} className="text-[17px] shrink-0">🔥</motion.span>
+        <div className="flex-1 min-w-0 text-left">
+          <p className="text-white font-bold text-[13px] truncate">
+            Séance en cours{status?.exerciseName ? ` · ${status.exerciseName}` : ""}
+          </p>
+          <p className="text-white/85 text-[11px] tabular-nums">
+            {fmtClock(status?.elapsedSec || 0)}
+            {status?.phase === "rest" && status?.restRemaining != null ? ` · repos ${fmtClock(status.restRemaining)}` : ""}
+          </p>
+        </div>
+        <ChevronRight size={17} color="#fff" className="shrink-0" />
+      </div>
+    </motion.button>
+  );
+}
+
+// Écran affiché sur l'onglet "Séance" quand aucune séance n'est active : choisir un
+// programme pour démarrer immédiatement (la gestion des programmes vit dans Profil).
+// Onglet "Séance" quand AUCUNE séance n'est active : ne montre jamais de liste de
+// programmes ici (ça, c'est le rôle d'Accueil). Juste un état vide qui renvoie choisir
+// une séance sur Accueil.
+function WorkoutStartScreen({ theme, onGoToDashboard }) {
+  return (
+    <div className="px-4 pt-10">
+      <Card theme={theme} className="p-8 flex flex-col items-center text-center">
+        <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 72, height: 72, background: theme.card2 }}>
+          <Flame size={30} color={theme.textFaint} />
+        </div>
+        <p style={{ color: theme.text }} className="font-bold text-[16px] mb-1.5">Aucune séance en cours</p>
+        <p style={{ color: theme.textMuted }} className="text-[13px] mb-6 max-w-[260px]">Choisis une séance sur l'écran d'accueil pour commencer à t'entraîner.</p>
+        <BigButton theme={theme} gradient onClick={onGoToDashboard}>
+          <Home size={17} /> Choisir une séance
+        </BigButton>
+      </Card>
+    </div>
+  );
+}
+
+// Petit en-tête réutilisé par les sous-pages de Profil (celles qui n'ont pas déjà leur
+// propre en-tête intégré comme ProgramEditor ou SessionDetail).
+function SubPageHeader({ theme, title, onBack }) {
+  return (
+    <div className="flex items-center gap-2 px-4 pt-4 pb-2 -ml-1">
+      <IconButton theme={theme} onClick={onBack}><ChevronLeft size={18} color={theme.text} /></IconButton>
+      <h1 style={{ color: theme.text }} className="text-[20px] font-extrabold truncate">{title}</h1>
+    </div>
+  );
+}
+
+const PROFILE_MENU_ITEMS = [
+  { id: "myprofile", view: "myprofile", icon: User, label: "Mon profil", desc: "Aperçu rapide de ton activité" },
+  { id: "progress", view: "progress", icon: TrendingUp, label: "Progression", desc: "Graphiques, charges, évolution des performances" },
+  { id: "history", view: "history", icon: HistoryIcon, label: "Historique séances", desc: "Revoir toutes tes séances passées" },
+  { id: "weight", view: "weight", icon: Scale, label: "Évolution du poids", desc: "Suivi, moyenne, tendance" },
+  { id: "records", view: "records", icon: Trophy, label: "Records", desc: "Tes meilleures charges par exercice" },
+  { id: "goals", view: "weight", icon: Target, label: "Objectifs", desc: "Objectif de poids et estimation" },
+  { id: "stats", view: "stats", icon: BarChart3, label: "Statistiques détaillées", desc: "Totaux, fréquence, heatmap, sauvegarde" },
+  { id: "programs", view: "programs", icon: Dumbbell, label: "Mes programmes", desc: "Créer, modifier, organiser tes séances" },
+  { id: "settings", view: "settings", icon: Settings, label: "Paramètres", desc: "Thème, repos par défaut" },
+];
+
+const GOALS = [
+  { id: "hypertrophy", label: "Prise de muscle" },
+  { id: "weightloss", label: "Perte de poids" },
+  { id: "performance", label: "Performance" },
+  { id: "hyrox", label: "Hyrox" },
+  { id: "strength", label: "Force" },
+];
+const LEVELS = [
+  { id: "beginner", label: "Débutant" },
+  { id: "intermediate", label: "Intermédiaire" },
+  { id: "advanced", label: "Avancé" },
+];
+
+function LabeledInput({ theme, label, value, onChange, placeholder = "", secure = false, keyboard }) {
+  return (
+    <div>
+      <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5 px-1">{label}</p>
+      <input
+        type={secure ? "password" : "text"} inputMode={keyboard === "email" ? "email" : "text"}
+        value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+        className="w-full rounded-xl px-3.5 py-3 text-[14.5px] outline-none"
+        style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+      />
+    </div>
+  );
+}
+
+// Rappel honnête et non alarmiste : ce compte est local à cet appareil. Aucun mot de passe
+// n'est jamais enregistré, même localement — le champ existe seulement pour représenter
+// l'écran demandé. Une vraie synchronisation multi-appareils nécessite un backend (voir
+// l'explication fournie à côté du code).
+function AuthDisclaimer({ theme }) {
+  return (
+    <div className="rounded-2xl p-3 flex items-start gap-2.5" style={{ background: `${theme.textMuted}0d` }}>
+      <Info size={14} color={theme.textMuted} className="mt-0.5 shrink-0" />
+      <p style={{ color: theme.textMuted }} className="text-[11.5px] leading-snug">
+        Profil local à cet appareil. Aucun mot de passe n'est enregistré. La synchronisation multi-appareils nécessite un backend, non disponible dans cet aperçu.
+      </p>
+    </div>
+  );
+}
+
+function SocialAuthButtons({ theme }) {
+  const [msg, setMsg] = useState(false);
+  return (
+    <div>
+      <div className="flex items-center gap-3 my-3">
+        <div className="flex-1 h-px" style={{ background: theme.border }} />
+        <span style={{ color: theme.textFaint }} className="text-[11px] font-semibold">OU</span>
+        <div className="flex-1 h-px" style={{ background: theme.border }} />
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        <BigButton theme={theme} onClick={() => setMsg(true)}>Google</BigButton>
+        <BigButton theme={theme} onClick={() => setMsg(true)}>Apple</BigButton>
+      </div>
+      {msg && (
+        <p style={{ color: theme.textFaint }} className="text-[11.5px] text-center mt-2.5 px-2">
+          La connexion Google/Apple nécessite une configuration backend (identifiants OAuth, serveur de vérification) — indisponible dans cet aperçu.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// En-tête de compte affiché tout en haut du menu Profil : CTA de création si pas de
+// profil local, sinon avatar + nom + e-mail.
+function ProfileAccountHeader({ theme, userProfile, onOpenAccount, onOpenSignUp }) {
+  if (!userProfile) {
+    return (
+      <button onClick={onOpenSignUp} className="w-full text-left active:scale-[0.98] transition-transform mb-1">
+        <Card theme={theme} className="p-4 flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${theme.accent}14, ${theme.accent2}0a)`, border: `1px solid ${theme.accent}33` }}>
+          <IconBadge theme={theme} icon={User} size={44} iconSize={20} filled />
+          <div className="flex-1 min-w-0">
+            <p style={{ color: theme.text }} className="font-bold text-[14.5px]">Créer un compte pour sauvegarder ta progression</p>
+            <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">Retrouve tes séances sur tous tes appareils</p>
+          </div>
+          <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
+        </Card>
+      </button>
+    );
+  }
+  const initials = (userProfile.name || "?").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+  return (
+    <button onClick={onOpenAccount} className="w-full text-left active:scale-[0.98] transition-transform mb-1">
+      <Card theme={theme} className="p-4 flex items-center gap-3">
+        <div className="rounded-full flex items-center justify-center shrink-0 text-white font-extrabold" style={{ width: 48, height: 48, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, fontSize: 16 }}>
+          {initials || <User size={20} />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p style={{ color: theme.text }} className="font-bold text-[15px] truncate">{userProfile.name}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] truncate">{userProfile.email}</p>
+        </div>
+        <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
+      </Card>
+    </button>
+  );
+}
+
+function ProfileMenu({ theme, userProfile, onSelect, onOpenAccount, onOpenSignUp }) {
+  return (
+    <div className="px-4 pt-2 space-y-2.5">
+      <ProfileAccountHeader theme={theme} userProfile={userProfile} onOpenAccount={onOpenAccount} onOpenSignUp={onOpenSignUp} />
+      {PROFILE_MENU_ITEMS.map((it) => (
+        <button key={it.id} onClick={() => onSelect(it.view)} className="w-full text-left active:scale-[0.98] transition-transform">
+          <Card theme={theme} className="p-4 flex items-center gap-3">
+            <IconBadge theme={theme} icon={it.icon} size={40} iconSize={18} filled />
+            <div className="flex-1 min-w-0">
+              <p style={{ color: theme.text }} className="font-bold text-[15px]">{it.label}</p>
+              <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{it.desc}</p>
+            </div>
+            <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
+          </Card>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// --- Écrans de compte (Inscription / Connexion / Mot de passe oublié) ------------------
+// Tous fonctionnent en local uniquement : voir <AuthDisclaimer/>. Aucun mot de passe n'est
+// jamais lu depuis le state après saisie (les champs `password` ne sont branchés à rien).
+
+function SignUpScreen({ theme, onBack, onCreate }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  return (
+    <div>
+      <SubPageHeader theme={theme} title="Créer un compte" onBack={onBack} />
+      <div className="px-4 space-y-3 pb-6">
+        <AuthDisclaimer theme={theme} />
+        <LabeledInput theme={theme} label="Nom / pseudo" value={name} onChange={setName} placeholder="Ex : Alex" />
+        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
+        <LabeledInput theme={theme} label="Mot de passe" value={password} onChange={setPassword} placeholder="••••••••" secure />
+        <BigButton theme={theme} gradient disabled={!name.trim() || !email.trim()} onClick={() => onCreate({ name: name.trim(), email: email.trim() })}>
+          <User size={17} /> Créer mon compte
+        </BigButton>
+        <SocialAuthButtons theme={theme} />
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ theme, userProfile, onBack, onLoggedIn, onGoSignUp }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const submit = () => {
+    if (userProfile && userProfile.email.trim().toLowerCase() === email.trim().toLowerCase()) {
+      setError(""); onLoggedIn();
+    } else {
+      setError("Aucun compte local avec cet e-mail sur cet appareil.");
+    }
+  };
+  return (
+    <div>
+      <SubPageHeader theme={theme} title="Connexion" onBack={onBack} />
+      <div className="px-4 space-y-3 pb-6">
+        <AuthDisclaimer theme={theme} />
+        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
+        <LabeledInput theme={theme} label="Mot de passe" value={password} onChange={setPassword} placeholder="••••••••" secure />
+        {error && <p style={{ color: theme.bad }} className="text-[12px] px-1">{error}</p>}
+        <BigButton theme={theme} gradient onClick={submit}>Se connecter</BigButton>
+        <SocialAuthButtons theme={theme} />
+        <button onClick={onGoSignUp} className="w-full text-center text-[12.5px] font-bold pt-1" style={{ color: theme.accent }}>Créer un compte</button>
+      </div>
+    </div>
+  );
+}
+
+function ForgotPasswordScreen({ theme, onBack }) {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  return (
+    <div>
+      <SubPageHeader theme={theme} title="Mot de passe oublié" onBack={onBack} />
+      <div className="px-4 space-y-3 pb-6">
+        <AuthDisclaimer theme={theme} />
+        <LabeledInput theme={theme} label="Adresse e-mail" value={email} onChange={setEmail} placeholder="toi@exemple.com" keyboard="email" />
+        <BigButton theme={theme} gradient onClick={() => setSent(true)}>Envoyer le lien</BigButton>
+        {sent && (
+          <p style={{ color: theme.good }} className="text-[12.5px] text-center px-2">
+            Dans une version connectée à un vrai backend, un e-mail serait envoyé à {email || "cette adresse"}. Aucun e-mail n'est envoyé dans cet aperçu.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Écran "Mon profil" : identité modifiable + aperçu rapide de l'activité -------------
+function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEntries, programs, onGoToSignUp, onLogout }) {
+  if (!userProfile) {
+    return (
+      <div className="px-4 pt-2 space-y-3">
+        <Card theme={theme}><EmptyState theme={theme} icon={User} title="Aucun compte" subtitle="Crée un compte pour personnaliser ton profil et préparer la synchronisation multi-appareils." /></Card>
+        <BigButton theme={theme} gradient onClick={onGoToSignUp}><User size={17} /> Créer un compte</BigButton>
+      </div>
+    );
+  }
+
+  const update = (patch) => setUserProfile((p) => ({ ...p, ...patch }));
+  const totalTonnage = sessions.reduce((a, s) => a + (s.tonnage || 0), 0);
+  const lastWeight = weightEntries.length ? [...weightEntries].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
+  const last30 = sessions.filter((s) => Date.now() - s.startedAt < 30 * 86400000).length;
+  const initials = (userProfile.name || "?").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+
+  return (
+    <div className="px-4 pt-2 space-y-4">
+      <Card theme={theme} className="p-5 flex items-center gap-4">
+        <div className="rounded-full flex items-center justify-center shrink-0 text-white font-extrabold" style={{ width: 60, height: 60, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, fontSize: 20 }}>
+          {initials || <User size={22} />}
+        </div>
+        <div className="min-w-0">
+          <p style={{ color: theme.text }} className="text-[18px] font-extrabold truncate">{userProfile.name}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12.5px] truncate">{userProfile.email}</p>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Séances (30j)</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{last30}</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Tonnage total</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{Math.round(totalTonnage / 1000)}t</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{lastWeight ? `${lastWeight.weight}kg` : "—"}</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Programmes</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{programs.length}</p></Card>
+      </div>
+
+      <Card theme={theme} className="p-4 space-y-3">
+        <p style={{ color: theme.text }} className="font-bold text-[14px]">Informations personnelles</p>
+        <LabeledInput theme={theme} label="Nom / pseudo" value={userProfile.name} onChange={(v) => update({ name: v })} />
+        <LabeledInput theme={theme} label="E-mail" value={userProfile.email} onChange={(v) => update({ email: v })} keyboard="email" />
+        <div className="grid grid-cols-2 gap-2.5">
+          <LabeledInput theme={theme} label="Âge" value={userProfile.age ?? ""} onChange={(v) => update({ age: v ? Number(v) : null })} placeholder="optionnel" />
+          <LabeledInput theme={theme} label="Taille (cm)" value={userProfile.height ?? ""} onChange={(v) => update({ height: v ? Number(v) : null })} placeholder="optionnel" />
+        </div>
+      </Card>
+
+      <Card theme={theme} className="p-4">
+        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2.5">Objectif sportif</p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {GOALS.map((g) => <Pill key={g.id} theme={theme} active={userProfile.goal === g.id} onClick={() => update({ goal: g.id })}>{g.label}</Pill>)}
+        </div>
+        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2.5">Niveau d'entraînement</p>
+        <div className="flex flex-wrap gap-2">
+          {LEVELS.map((l) => <Pill key={l.id} theme={theme} active={userProfile.level === l.id} onClick={() => update({ level: l.id })}>{l.label}</Pill>)}
+        </div>
+      </Card>
+
+      <button onClick={onLogout} className="w-full text-center text-[13px] font-semibold py-2" style={{ color: theme.bad }}>Se déconnecter</button>
+    </div>
+  );
+}
+
+// Réglages : ce qui n'avait pas encore de vrai réglage dans l'app (le repos par défaut
+// existait déjà en state mais n'était modifiable nulle part) + rappel du thème.
+function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, userProfile, onDeleteAccount }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <div className="px-4 pt-2 space-y-3">
+      <Card theme={theme} className="p-4 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <IconBadge theme={theme} icon={isDark ? Moon : Sun} size={36} iconSize={16} filled />
+          <div>
+            <p style={{ color: theme.text }} className="font-semibold text-[14.5px]">Thème</p>
+            <p style={{ color: theme.textMuted }} className="text-[12px]">{isDark ? "Sombre" : "Clair"}</p>
+          </div>
+        </div>
+        <button onClick={() => setIsDark((d) => !d)} className="px-3.5 py-2 rounded-xl font-bold text-[12.5px] active:scale-95 transition-transform" style={{ background: theme.card2, color: theme.accent, border: `1px solid ${theme.border}` }}>
+          Changer
+        </button>
+      </Card>
+      <Card theme={theme} className="p-4">
+        <div className="flex items-center gap-2.5 mb-3.5">
+          <IconBadge theme={theme} icon={Timer} size={36} iconSize={16} filled />
+          <div>
+            <p style={{ color: theme.text }} className="font-semibold text-[14.5px]">Repos par défaut</p>
+            <p style={{ color: theme.textMuted }} className="text-[12px]">Utilisé quand un exercice n'a pas de repos défini</p>
+          </div>
+        </div>
+        <MiniStepper theme={theme} label="Secondes" value={settings.restDefault} step={15} onChange={(v) => setSettings((s) => ({ ...s, restDefault: v }))} suffix="s" />
+      </Card>
+      {userProfile && (
+        <Card theme={theme} className="p-4">
+          <p style={{ color: theme.text }} className="font-semibold text-[14.5px] mb-1">Zone de danger</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mb-3">Supprime définitivement ton compte et toutes tes données sur cet appareil (programmes, historique, poids).</p>
+          <button onClick={() => setConfirmDelete(true)} className="w-full rounded-xl py-3 font-bold text-[13px] flex items-center justify-center gap-2" style={{ background: `${theme.bad}18`, color: theme.bad }}>
+            <Trash2 size={14} /> Supprimer le compte
+          </button>
+        </Card>
+      )}
+      <AnimatePresence>
+        {confirmDelete && (
+          <ConfirmSheet theme={theme} danger title="Supprimer le compte ?" subtitle="Toutes tes données sur cet appareil seront définitivement effacées. Cette action est irréversible."
+            confirmLabel="Supprimer définitivement" onConfirm={onDeleteAccount} onCancel={() => setConfirmDelete(false)} />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// Centre de gestion "Profil" : regroupe tout ce qui n'est pas la navigation quotidienne
+// (Accueil / Séance / Progression). Reprend telles quelles les pages déjà existantes
+// (ProgramsList, ProgramEditor, HistoryList, SessionDetail, WeightPage, StatsPage) —
+// seule leur navigation change : elle est maintenant locale à Profil au lieu de vivre
+// au niveau App.
+function ProfileHub({
+  theme, isDark, setIsDark, programs, setPrograms, sessions, setSessions,
+  weightEntries, setWeightEntries, settings, setSettings, onStartProgram, onExport, onImport,
+  userProfile, setUserProfile, onDeleteAccount,
+}) {
+  const [view, setView] = useState(null); // null = menu racine
+  const [programId, setProgramId] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+
+  if (!view) {
+    return (
+      <div>
+        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+          <div className="flex items-center gap-2.5">
+            <IconBadge theme={theme} icon={User} size={34} iconSize={16} filled />
+            <h1 style={{ color: theme.text }} className="text-[26px] font-extrabold tracking-tight">Profil</h1>
+          </div>
+          <button onClick={() => setIsDark((d) => !d)} className="active:scale-90 transition-transform rounded-full flex items-center justify-center" style={{ width: 38, height: 38, background: theme.card2, border: `1px solid ${theme.border}` }}>
+            {isDark ? <Sun size={17} color={theme.text} /> : <Moon size={17} color={theme.text} />}
+          </button>
+        </div>
+        <ProfileMenu
+          theme={theme} userProfile={userProfile} onSelect={setView}
+          onOpenAccount={() => setView("myprofile")} onOpenSignUp={() => setView("signup")}
+        />
+      </div>
+    );
+  }
+
+  if (view === "signup") {
+    return (
+      <SignUpScreen
+        theme={theme} onBack={() => setView(null)}
+        onCreate={(data) => {
+          setUserProfile({ name: data.name, email: data.email, age: null, height: null, goal: "", level: "", createdAt: new Date().toISOString() });
+          setView("myprofile");
+        }}
+      />
+    );
+  }
+
+  if (view === "login") {
+    return (
+      <LoginScreen
+        theme={theme} userProfile={userProfile} onBack={() => setView(null)}
+        onLoggedIn={() => setView("myprofile")} onGoSignUp={() => setView("signup")}
+      />
+    );
+  }
+
+  if (view === "forgotPassword") {
+    return <ForgotPasswordScreen theme={theme} onBack={() => setView("login")} />;
+  }
+
+  if (view === "myprofile") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Mon profil" onBack={() => setView(null)} />
+        <MyProfileView
+          theme={theme} userProfile={userProfile} setUserProfile={setUserProfile}
+          sessions={sessions} weightEntries={weightEntries} programs={programs}
+          onGoToSignUp={() => setView("signup")}
+          onLogout={() => { setUserProfile(null); setView(null); }}
+        />
+      </div>
+    );
+  }
+
+  if (view === "programs") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Mes programmes" onBack={() => setView(null)} />
+        <ProgramsList
+          theme={theme} programs={programs} setPrograms={setPrograms}
+          onOpen={(id) => { setProgramId(id); setView("programEditor"); }}
+          onStart={onStartProgram}
+        />
+      </div>
+    );
+  }
+
+  if (view === "programEditor") {
+    return (
+      <ProgramEditor
+        theme={theme} program={programs.find((p) => p.id === programId)}
+        setPrograms={setPrograms} onBack={() => setView("programs")} onStart={onStartProgram}
+      />
+    );
+  }
+
+  if (view === "history") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Historique séances" onBack={() => setView(null)} />
+        <HistoryList theme={theme} sessions={sessions} onOpen={(id) => { setSessionId(id); setView("sessionDetail"); }} />
+      </div>
+    );
+  }
+
+  if (view === "sessionDetail") {
+    return (
+      <SessionDetail
+        theme={theme} session={sessions.find((s) => s.id === sessionId)}
+        onBack={() => setView("history")}
+        onDelete={(id) => { setSessions((s) => s.filter((x) => x.id !== id)); setView("history"); }}
+        onDuplicate={(session) => onStartProgram(programFromSession(session))}
+      />
+    );
+  }
+
+  if (view === "weight") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Évolution du poids" onBack={() => setView(null)} />
+        <WeightPage theme={theme} entries={weightEntries} setEntries={setWeightEntries} settings={settings} setSettings={setSettings} />
+      </div>
+    );
+  }
+
+  if (view === "stats") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Statistiques détaillées" onBack={() => setView(null)} />
+        <StatsPage theme={theme} sessions={sessions} programs={programs} onExport={onExport} onImport={onImport} />
+      </div>
+    );
+  }
+
+  if (view === "progress") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Progression" onBack={() => setView(null)} />
+        <ProgressPage theme={theme} sessions={sessions} programs={programs} />
+      </div>
+    );
+  }
+
+  if (view === "records") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Records" onBack={() => setView(null)} />
+        <RecordsPage theme={theme} sessions={sessions} />
+      </div>
+    );
+  }
+
+  if (view === "settings") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Paramètres" onBack={() => setView(null)} />
+        <SettingsPage theme={theme} isDark={isDark} setIsDark={setIsDark} settings={settings} setSettings={setSettings} userProfile={userProfile} onDeleteAccount={onDeleteAccount} />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// --- "Records" : tous les records personnels, triés par charge --------------------------
+function RecordsPage({ theme, sessions }) {
+  const prs = useMemo(() => computePRs(sessions), [sessions]);
+  const list = useMemo(() => Object.entries(prs).sort((a, b) => b[1].maxWeight - a[1].maxWeight), [prs]);
+  return (
+    <div className="px-4 pt-2 space-y-2.5">
+      {list.length === 0 ? (
+        <Card theme={theme}><EmptyState theme={theme} icon={Trophy} title="Pas encore de records" subtitle="Termine des séries pendant une séance pour voir apparaître tes records ici." /></Card>
+      ) : (
+        <Card theme={theme}>
+          {list.map(([name, pr], i) => (
+            <div key={name} className="px-4 py-3.5 flex items-center justify-between" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
+              <div className="flex items-center gap-3 min-w-0">
+                <IconBadge theme={theme} icon={Trophy} size={36} iconSize={16} filled />
+                <div className="min-w-0">
+                  <p style={{ color: theme.text }} className="font-semibold text-[14px] truncate">{name}</p>
+                  <p style={{ color: theme.textMuted }} className="text-[11.5px]">{fmtDate(pr.date)}</p>
+                </div>
+              </div>
+              <div className="text-right shrink-0">
+                <p style={{ color: theme.accent }} className="font-bold text-[15px]">{pr.maxWeight}kg</p>
+                <p style={{ color: theme.textFaint }} className="text-[10.5px]">1RM est. {pr.est1RM}kg</p>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// --- "Mon profil" : identité + aperçu rapide de l'activité (voir MyProfileView) --------
 
 /* ============================== DASHBOARD ============================== */
 
@@ -529,11 +1263,43 @@ function lastPerformanceFor(sessions, exerciseName) {
   return null;
 }
 
+// Carte de sélection d'une séance disponible (Accueil). Ceci ne fait que choisir QUEL
+// programme sera démarré au prochain tap sur "Commencer la séance" — aucune séance n'est
+// active tant que ce bouton n'a pas été pressé.
+function ProgramSelectCard({ theme, program, selected, onSelect }) {
+  const count = flattenExercises(program.blocks).length;
+  return (
+    <button onClick={onSelect} className="w-full text-left active:scale-[0.98] transition-transform">
+      <Card
+        theme={theme} className="p-4 flex items-center gap-3"
+        style={{ border: `1.5px solid ${selected ? theme.accent : theme.border}`, background: selected ? `${theme.accent}14` : theme.card }}
+      >
+        <div style={{ width: 10, height: 10, borderRadius: 999, background: program.color || theme.accent }} className="shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p style={{ color: theme.text }} className="font-bold text-[15px] truncate">{program.name}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{count} exercice{count !== 1 ? "s" : ""}</p>
+        </div>
+        {selected ? (
+          <IconBadge theme={theme} icon={Check} size={28} iconSize={14} filled />
+        ) : (
+          <div className="rounded-full shrink-0" style={{ width: 22, height: 22, border: `2px solid ${theme.border}` }} />
+        )}
+      </Card>
+    </button>
+  );
+}
+
 function Dashboard({ theme, programs, sessions, weightEntries, settings, setSettings, onStart }) {
   const prs = useMemo(() => computePRs(sessions), [sessions]);
   const lastWeight = weightEntries.length ? [...weightEntries].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
   const suggestedIndex = programs.length ? (settings.lastProgramIndex + 1) % programs.length : -1;
-  const suggested = programs[suggestedIndex] || programs[0];
+  const suggested = programs[suggestedIndex] || programs[0] || null;
+
+  // Séances disponibles (les programmes) vs. sélection en cours de constitution : ceci
+  // n'est PAS la séance active, juste "quel programme l'utilisateur s'apprête à démarrer".
+  // Tant qu'on n'a pas tapé "Commencer la séance", rien n'est démarré nulle part.
+  const [selectedId, setSelectedId] = useState(null);
+  const selectedProgram = programs.find((p) => p.id === selectedId) || suggested;
 
   const last7 = sessions.filter((s) => Date.now() - s.startedAt < 7 * 86400000);
   const tonnage7 = last7.reduce((a, s) => a + (s.tonnage || 0), 0);
@@ -543,28 +1309,45 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
   const recentSessions = sessions.slice(0, 3);
   const topPRs = Object.entries(prs).sort((a, b) => b[1].maxWeight - a[1].maxWeight).slice(0, 3);
 
+  const handleStart = () => {
+    if (!selectedProgram) return;
+    const idx = programs.findIndex((p) => p.id === selectedProgram.id);
+    if (idx !== -1) setSettings((s) => ({ ...s, lastProgramIndex: idx }));
+    onStart(selectedProgram);
+  };
+
   return (
     <div className="px-4 pt-2 space-y-5">
       <Card theme={theme} className="p-5 relative overflow-hidden">
         <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: 999, background: `radial-gradient(circle, ${theme.accent}22, transparent 70%)` }} />
         <div className="flex items-center justify-between relative">
           <div>
-            <p style={{ color: theme.textMuted }} className="text-[12px] font-medium">Programme suggéré</p>
-            <p style={{ color: theme.text }} className="text-[22px] font-extrabold mt-0.5">{suggested ? suggested.name : "Aucun"}</p>
-            {suggested && <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{suggested.exercises.length} exercices</p>}
+            <p style={{ color: theme.textMuted }} className="text-[12px] font-medium">Activité de la semaine</p>
+            <p style={{ color: theme.text }} className="text-[22px] font-extrabold mt-0.5">{last7.length} séance{last7.length !== 1 ? "s" : ""}</p>
+            <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{Math.round(tonnage7).toLocaleString("fr-FR")} kg soulevés</p>
           </div>
           <EffortRing theme={theme} progress={ringProgress} value={`${Math.round(tonnage7 / 1000) || 0}t`} label="7 jours" />
         </div>
-        {suggested && (
-          <button
-            onClick={() => { setSettings((s) => ({ ...s, lastProgramIndex: suggestedIndex })); onStart(suggested); }}
-            className="w-full mt-5 rounded-2xl py-4 font-bold text-[16px] text-white active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
-            style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, boxShadow: `0 8px 24px -8px ${theme.accent}88` }}
-          >
-            <Play size={18} fill="#fff" /> Commencer la séance
-          </button>
-        )}
       </Card>
+
+      <div>
+        <SectionTitle theme={theme}>Mes séances</SectionTitle>
+        {programs.length === 0 ? (
+          <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun programme" subtitle="Crée un programme dans Profil pour pouvoir démarrer une séance." /></Card>
+        ) : (
+          <div className="space-y-2.5">
+            {programs.map((p) => (
+              <ProgramSelectCard key={p.id} theme={theme} program={p} selected={selectedProgram?.id === p.id} onSelect={() => setSelectedId(p.id)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {programs.length > 0 && (
+        <BigButton theme={theme} gradient disabled={!selectedProgram} onClick={handleStart}>
+          <Play size={18} fill="#fff" /> Commencer la séance
+        </BigButton>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <Card theme={theme} className="p-4">
@@ -601,12 +1384,12 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
       <div>
         <SectionTitle theme={theme}>Records personnels</SectionTitle>
         {topPRs.length === 0 ? (
-          <Card theme={theme}><EmptyState theme={theme} icon={Award} title="Pas encore de records" /></Card>
+          <Card theme={theme}><EmptyState theme={theme} icon={Trophy} title="Pas encore de records" /></Card>
         ) : (
           <div className="grid grid-cols-3 gap-2.5">
             {topPRs.map(([name, pr]) => (
               <Card theme={theme} className="p-3" key={name}>
-                <Award size={14} color={theme.accent2} className="mb-1.5" />
+                <Trophy size={14} color={theme.accent2} className="mb-1.5" />
                 <p style={{ color: theme.text }} className="text-[13px] font-bold leading-tight">{pr.maxWeight}kg</p>
                 <p style={{ color: theme.textMuted }} className="text-[10.5px] leading-tight mt-0.5 line-clamp-2">{name}</p>
               </Card>
@@ -616,7 +1399,7 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
       </div>
 
       <Card theme={theme} className="p-4 flex items-start gap-3" style={{ background: `linear-gradient(135deg, ${theme.accent}14, ${theme.accent2}0a)` }}>
-        <Info size={16} color={theme.accent} className="mt-0.5 shrink-0" />
+        <Sparkles size={16} color={theme.accent} className="mt-0.5 shrink-0" />
         <p style={{ color: theme.text }} className="text-[13px] italic leading-snug">{quoteOfTheDay()}</p>
       </Card>
     </div>
@@ -627,30 +1410,36 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
 
 function ProgramsList({ theme, programs, setPrograms, onOpen, onStart }) {
   const addProgram = () => {
-    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, exercises: [] };
+    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, blocks: [] };
     setPrograms((ps) => [...ps, p]);
     onOpen(p.id);
   };
   return (
     <div className="px-4 pt-2 space-y-3">
       {programs.length === 0 && <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun programme" subtitle="Crée ton premier programme d'entraînement." /></Card>}
-      {programs.map((p) => (
-        <Card key={p.id} theme={theme} className="p-4">
-          <div className="flex items-center justify-between">
-            <button className="flex-1 text-left" onClick={() => onOpen(p.id)}>
-              <div className="flex items-center gap-2.5">
-                <div style={{ width: 10, height: 10, borderRadius: 999, background: p.color || theme.accent }} />
-                <p style={{ color: theme.text }} className="font-bold text-[16px]">{p.name}</p>
+      {programs.map((p) => {
+        const count = flattenExercises(p.blocks).length;
+        const groupCount = (p.blocks || []).filter((b) => b.exercises.length > 1).length;
+        return (
+          <Card key={p.id} theme={theme} className="p-4">
+            <div className="flex items-center justify-between">
+              <button className="flex-1 text-left" onClick={() => onOpen(p.id)}>
+                <div className="flex items-center gap-2.5">
+                  <div style={{ width: 10, height: 10, borderRadius: 999, background: p.color || theme.accent }} />
+                  <p style={{ color: theme.text }} className="font-bold text-[16px]">{p.name}</p>
+                </div>
+                <p style={{ color: theme.textMuted }} className="text-[12.5px] mt-1 ml-[18px]">
+                  {count} exercice{count !== 1 ? "s" : ""}{groupCount > 0 ? ` · ${groupCount} enchaînement${groupCount !== 1 ? "s" : ""}` : ""}
+                </p>
+              </button>
+              <div className="flex items-center gap-2">
+                <IconButton theme={theme} onClick={() => onStart(p)}><Play size={15} color={theme.accent} fill={theme.accent} /></IconButton>
+                <IconButton theme={theme} onClick={() => onOpen(p.id)}><ChevronRight size={16} color={theme.textMuted} /></IconButton>
               </div>
-              <p style={{ color: theme.textMuted }} className="text-[12.5px] mt-1 ml-[18px]">{p.exercises.length} exercice{p.exercises.length !== 1 ? "s" : ""}</p>
-            </button>
-            <div className="flex items-center gap-2">
-              <IconButton theme={theme} onClick={() => onStart(p)}><Play size={15} color={theme.accent} fill={theme.accent} /></IconButton>
-              <IconButton theme={theme} onClick={() => onOpen(p.id)}><ChevronRight size={16} color={theme.textMuted} /></IconButton>
             </div>
-          </div>
-        </Card>
-      ))}
+          </Card>
+        );
+      })}
       <button onClick={addProgram} className="w-full rounded-2xl py-4 font-bold text-[15px] flex items-center justify-center gap-2 active:scale-[0.98] transition-transform" style={{ background: theme.card2, color: theme.accent, border: `1.5px dashed ${theme.border}` }}>
         <Plus size={18} /> Nouveau programme
       </button>
@@ -662,19 +1451,55 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(program?.name || "");
   const [showAdd, setShowAdd] = useState(false);
+  const [pairTarget, setPairTarget] = useState(null); // blockId currently pairing/extending
 
   if (!program) return null;
 
   const updateProgram = (fn) => setPrograms((ps) => ps.map((p) => (p.id === program.id ? fn({ ...p }) : p)));
-  const setExercises = (exercises) => updateProgram((p) => ({ ...p, exercises }));
+  const setBlocks = (blocks) => updateProgram((p) => ({ ...p, blocks }));
 
-  const removeExercise = (id) => setExercises(program.exercises.filter((e) => e.id !== id));
-  const updateExercise = (id, patch) => setExercises(program.exercises.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+  const updateExerciseInBlock = (blockId, exId, patch) =>
+    setBlocks(program.blocks.map((b) => (b.id === blockId ? { ...b, exercises: b.exercises.map((e) => (e.id === exId ? { ...e, ...patch } : e)) } : b)));
+
+  const updateBlockRest = (blockId, restSec) => setBlocks(program.blocks.map((b) => (b.id === blockId ? { ...b, restSec } : b)));
+
+  const removeBlock = (blockId) => setBlocks(program.blocks.filter((b) => b.id !== blockId));
+
+  const removeExerciseFromBlock = (blockId, exId) => {
+    setBlocks(program.blocks.flatMap((b) => {
+      if (b.id !== blockId) return [b];
+      const remaining = b.exercises.filter((e) => e.id !== exId);
+      if (remaining.length === 0) return [];
+      return [{ ...b, exercises: remaining }];
+    }));
+  };
+
+  const dissociateBlock = (blockId) => {
+    setBlocks(program.blocks.flatMap((b) => {
+      if (b.id !== blockId) return [b];
+      return b.exercises.map((ex) => ({ id: uid(), restSec: b.restSec, exercises: [ex] }));
+    }));
+  };
+
+  const addNewExercise = (ex) => setBlocks([...program.blocks, { id: uid(), restSec: ex.rest || 90, exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes }] }]);
+
+  const attachExercise = (blockId, exDef) => {
+    setBlocks(program.blocks
+      .filter((b) => b.id !== exDef.__sourceBlockId)
+      .map((b) => (b.id === blockId ? { ...b, exercises: [...b.exercises, { id: exDef.id, name: exDef.name, series: exDef.series, reps: exDef.reps, notes: exDef.notes || "" }] } : b)));
+    setPairTarget(null);
+  };
 
   const deleteProgram = () => {
     setPrograms((ps) => ps.filter((p) => p.id !== program.id));
     onBack();
   };
+
+  const letters = computeGroupLetters(program.blocks);
+  const pairTargetBlock = program.blocks.find((b) => b.id === pairTarget);
+  const candidateExercises = program.blocks
+    .filter((b) => b.id !== pairTarget && b.exercises.length === 1)
+    .map((b) => ({ ...b.exercises[0], __sourceBlockId: b.id }));
 
   return (
     <div className="px-4 pt-1 space-y-4">
@@ -702,13 +1527,31 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
 
       <div>
         <SectionTitle theme={theme}>Exercices · glisser pour réordonner</SectionTitle>
-        {program.exercises.length === 0 ? (
+        {program.blocks.length === 0 ? (
           <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun exercice" subtitle="Ajoute des exercices à ce programme." /></Card>
         ) : (
-          <Reorder.Group axis="y" values={program.exercises} onReorder={setExercises} className="space-y-2.5">
-            {program.exercises.map((ex) => (
-              <Reorder.Item key={ex.id} value={ex}>
-                <ExerciseRow theme={theme} exercise={ex} onUpdate={(patch) => updateExercise(ex.id, patch)} onRemove={() => removeExercise(ex.id)} />
+          <Reorder.Group axis="y" values={program.blocks} onReorder={setBlocks} className="space-y-2.5">
+            {program.blocks.map((block) => (
+              <Reorder.Item key={block.id} value={block}>
+                {block.exercises.length === 1 ? (
+                  <ExerciseRow
+                    theme={theme} exercise={block.exercises[0]} restSec={block.restSec}
+                    onUpdate={(patch) => updateExerciseInBlock(block.id, block.exercises[0].id, patch)}
+                    onUpdateRest={(r) => updateBlockRest(block.id, r)}
+                    onRemove={() => removeBlock(block.id)}
+                    onCreateSuperset={() => setPairTarget(block.id)}
+                  />
+                ) : (
+                  <GroupBlockCard
+                    theme={theme} block={block} letter={letters[block.id]}
+                    onUpdateExercise={(exId, patch) => updateExerciseInBlock(block.id, exId, patch)}
+                    onUpdateRest={(r) => updateBlockRest(block.id, r)}
+                    onRemoveExercise={(exId) => removeExerciseFromBlock(block.id, exId)}
+                    onDissociate={() => dissociateBlock(block.id)}
+                    onDeleteGroup={() => removeBlock(block.id)}
+                    onAddToGroup={() => setPairTarget(block.id)}
+                  />
+                )}
               </Reorder.Item>
             ))}
           </Reorder.Group>
@@ -725,14 +1568,27 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
 
       <AnimatePresence>
         {showAdd && (
-          <AddExerciseSheet theme={theme} onClose={() => setShowAdd(false)} onAdd={(ex) => { setExercises([...program.exercises, ex]); setShowAdd(false); }} />
+          <AddExerciseSheet theme={theme} onClose={() => setShowAdd(false)} onAdd={(ex) => { addNewExercise(ex); setShowAdd(false); }} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pairTarget && (
+          <PairExerciseSheet
+            theme={theme}
+            title={pairTargetBlock && pairTargetBlock.exercises.length > 1 ? "Ajouter au groupe" : "Créer un biset"}
+            candidates={candidateExercises}
+            onClose={() => setPairTarget(null)}
+            onPickExisting={(exDef) => attachExercise(pairTarget, exDef)}
+            onCreateNew={(exDef) => attachExercise(pairTarget, exDef)}
+          />
         )}
       </AnimatePresence>
     </div>
   );
 }
 
-function ExerciseRow({ theme, exercise, onUpdate, onRemove }) {
+function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemove, onCreateSuperset }) {
   const [open, setOpen] = useState(false);
   return (
     <Card theme={theme} className="overflow-hidden">
@@ -740,7 +1596,7 @@ function ExerciseRow({ theme, exercise, onUpdate, onRemove }) {
         <GripVertical size={16} color={theme.textFaint} className="cursor-grab shrink-0" />
         <button className="flex-1 text-left" onClick={() => setOpen((o) => !o)}>
           <p style={{ color: theme.text }} className="font-semibold text-[14.5px]">{exercise.name}</p>
-          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{exercise.series} × {exercise.reps} reps · repos {exercise.rest}s</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{exercise.series} × {exercise.reps} reps · repos {restSec}s</p>
         </button>
         <ChevronDown size={16} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} onClick={() => setOpen((o) => !o)} />
       </div>
@@ -754,19 +1610,153 @@ function ExerciseRow({ theme, exercise, onUpdate, onRemove }) {
               <div className="grid grid-cols-3 gap-2">
                 <MiniStepper theme={theme} label="Séries" value={exercise.series} onChange={(v) => onUpdate({ series: v })} />
                 <MiniStepper theme={theme} label="Reps" value={exercise.reps} onChange={(v) => onUpdate({ reps: v })} />
-                <MiniStepper theme={theme} label="Repos" value={exercise.rest} step={15} onChange={(v) => onUpdate({ rest: v })} suffix="s" />
+                <MiniStepper theme={theme} label="Repos" value={restSec} step={15} onChange={onUpdateRest} suffix="s" />
               </div>
               <textarea placeholder="Notes (technique, variante...)" value={exercise.notes} onChange={(e) => onUpdate({ notes: e.target.value })}
                 className="w-full rounded-xl p-2.5 text-[13px] outline-none resize-none" rows={2}
                 style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
-              <button onClick={onRemove} className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: theme.bad }}>
-                <Trash2 size={12} /> Retirer cet exercice
-              </button>
+              <div className="flex items-center justify-between pt-1">
+                <button onClick={onRemove} className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: theme.bad }}>
+                  <Trash2 size={12} /> Retirer cet exercice
+                </button>
+                <button onClick={onCreateSuperset} className="text-[12.5px] font-bold flex items-center gap-1.5" style={{ color: theme.accent }}>
+                  <Link2 size={12} /> Créer un biset
+                </button>
+              </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </Card>
+  );
+}
+
+function GroupBlockCard({ theme, block, letter, onUpdateExercise, onUpdateRest, onRemoveExercise, onDissociate, onDeleteGroup, onAddToGroup }) {
+  const [openId, setOpenId] = useState(null);
+  const label = groupLabel(block.exercises.length);
+  return (
+    <Card theme={theme} className="overflow-hidden" style={{ border: `1.5px solid ${theme.accent}55` }}>
+      <div className="flex items-center justify-between px-3.5 pt-3.5 pb-2.5">
+        <div className="flex items-center gap-2">
+          <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold" style={{ background: theme.accent, color: "#fff" }}>{label}</span>
+          <span style={{ color: theme.textMuted }} className="text-[11.5px]">{block.exercises.length} exercices liés</span>
+        </div>
+        <GripVertical size={16} color={theme.textFaint} className="cursor-grab shrink-0" />
+      </div>
+      <div className="px-3.5 space-y-2">
+        {block.exercises.map((ex, i) => {
+          const open = openId === ex.id;
+          return (
+            <div key={ex.id} className="rounded-2xl overflow-hidden" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+              <button className="w-full flex items-center gap-2.5 p-3 text-left" onClick={() => setOpenId(open ? null : ex.id)}>
+                <span className="text-[11px] font-extrabold shrink-0" style={{ color: theme.accent }}>{letter}{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <p style={{ color: theme.text }} className="font-semibold text-[13.5px] truncate">{ex.name}</p>
+                  <p style={{ color: theme.textMuted }} className="text-[11.5px]">{ex.series} × {ex.reps} reps</p>
+                </div>
+                <ChevronDown size={14} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+              </button>
+              <AnimatePresence>
+                {open && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                    <div className="px-3 pb-3 space-y-2.5" style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 10 }}>
+                      <FieldRow theme={theme} label="Nom">
+                        <input value={ex.name} onChange={(e) => onUpdateExercise(ex.id, { name: e.target.value })} className="bg-transparent outline-none text-right flex-1" style={{ color: theme.text }} />
+                      </FieldRow>
+                      <div className="grid grid-cols-2 gap-2">
+                        <MiniStepper theme={theme} label="Séries" value={ex.series} onChange={(v) => onUpdateExercise(ex.id, { series: v })} />
+                        <MiniStepper theme={theme} label="Reps" value={ex.reps} onChange={(v) => onUpdateExercise(ex.id, { reps: v })} />
+                      </div>
+                      <textarea placeholder="Notes" value={ex.notes} onChange={(e) => onUpdateExercise(ex.id, { notes: e.target.value })}
+                        className="w-full rounded-xl p-2.5 text-[12.5px] outline-none resize-none" rows={2}
+                        style={{ background: theme.bg, color: theme.text, border: `1px solid ${theme.border}` }} />
+                      {block.exercises.length > 2 && (
+                        <button onClick={() => onRemoveExercise(ex.id)} className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: theme.bad }}>
+                          <Trash2 size={11} /> Retirer du groupe
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-3.5 pt-3 pb-1">
+        <FieldRow theme={theme} label="Repos après la série complète">
+          <MiniStepper theme={theme} label="Repos" value={block.restSec} step={15} onChange={onUpdateRest} suffix="s" />
+        </FieldRow>
+      </div>
+      <div className="flex items-center justify-between px-3.5 py-3 mt-1" style={{ borderTop: `1px solid ${theme.border}` }}>
+        <button onClick={onAddToGroup} className="text-[12px] font-bold flex items-center gap-1.5" style={{ color: theme.accent }}>
+          <Plus size={12} /> Ajouter un exercice
+        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={onDissociate} className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: theme.textMuted }}>
+            <Unlink size={12} /> Dissocier
+          </button>
+          <button onClick={onDeleteGroup} className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: theme.bad }}>
+            <Trash2 size={12} /> Supprimer
+          </button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function PairExerciseSheet({ theme, title, candidates, onClose, onPickExisting, onCreateNew }) {
+  const [mode, setMode] = useState(candidates.length ? "pick" : "new");
+  const [name, setName] = useState("");
+  const [series, setSeries] = useState(4);
+  const [reps, setReps] = useState(10);
+
+  return (
+    <motion.div className="fixed inset-0 z-[100] flex items-end justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+        className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1 flex items-center gap-1.5"><Link2 size={16} color={theme.accent} /> {title}</h3>
+        <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Choisis un exercice existant du programme ou crées-en un nouveau.</p>
+
+        <div className="flex gap-2 mb-4">
+          <Pill theme={theme} active={mode === "pick"} onClick={() => setMode("pick")}>Exercice existant</Pill>
+          <Pill theme={theme} active={mode === "new"} onClick={() => setMode("new")}>Nouvel exercice</Pill>
+        </div>
+
+        {mode === "pick" ? (
+          candidates.length === 0 ? (
+            <p style={{ color: theme.textFaint }} className="text-[13px] text-center py-6">Aucun autre exercice disponible. Crée-en un nouveau.</p>
+          ) : (
+            <div className="space-y-2">
+              {candidates.map((c) => (
+                <button key={c.id} onClick={() => onPickExisting(c)} className="w-full flex items-center justify-between rounded-2xl p-3.5 text-left active:scale-[0.98] transition-transform"
+                  style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+                  <div>
+                    <p style={{ color: theme.text }} className="font-semibold text-[14px]">{c.name}</p>
+                    <p style={{ color: theme.textMuted }} className="text-[11.5px]">{c.series} × {c.reps} reps</p>
+                  </div>
+                  <Link2 size={14} color={theme.accent} />
+                </button>
+              ))}
+            </div>
+          )
+        ) : (
+          <div className="space-y-3">
+            <input autoFocus placeholder="Nom de l'exercice" value={name} onChange={(e) => setName(e.target.value)}
+              className="w-full rounded-xl px-3 py-3 text-[14.5px] outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+            <div className="grid grid-cols-2 gap-2">
+              <MiniStepper theme={theme} label="Séries" value={series} onChange={setSeries} />
+              <MiniStepper theme={theme} label="Reps" value={reps} onChange={setReps} />
+            </div>
+            <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onCreateNew({ id: uid(), name: name.trim(), series, reps, notes: "" })}>
+              <Link2 size={16} /> Créer et associer
+            </BigButton>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -843,97 +1833,316 @@ function AddExerciseSheet({ theme, onClose, onAdd }) {
 
 /* ============================== WORKOUT SESSION ============================== */
 
-function WorkoutSession({ theme, workout, setWorkout, sessions, onFinish, onCancel, restDefault }) {
-  const [elapsed, setElapsed] = useState(0);
-  const [restTimer, setRestTimer] = useState(null); // {total, remaining, running}
-  const [confirmEnd, setConfirmEnd] = useState(false);
-  const restIntervalRef = useRef(null);
+/* ============================== MODE ENTRAÎNEMENT (séance en temps réel) ============================== */
+// Cette section gère le déroulé pas-à-pas d'une séance : un chrono global qui ne s'arrête
+// jamais, un minuteur de récupération indépendant (pause/reprise), et une navigation
+// automatique série par série / exercice par exercice.
+
+// Formate un nombre de secondes en horloge "MM:SS" (ou "H:MM:SS" au-delà d'une heure).
+// Utilisé à la fois pour le gros chrono de séance et pour le minuteur de récupération.
+function fmtClock(sec) {
+  const total = Math.max(0, Math.floor(sec));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// Construit la liste ORDONNÉE des étapes d'une séance à partir des blocks du programme.
+// Une étape = une série précise d'un exercice précis, dans l'ordre exact d'exécution :
+//   - Exercice seul            -> Série 1, Série 2, Série 3...
+//   - Biset/Triset/Circuit     -> pour chaque tour : A1 puis A2 (puis A3...) AVANT le repos.
+// `isLastOfRound` indique si cette étape est la dernière du tour : c'est UNIQUEMENT à ce
+// moment-là que le minuteur de récupération doit se déclencher (jamais entre A1 et A2).
+function buildSessionSteps(blocks) {
+  const steps = [];
+  blocks.forEach((block) => {
+    const rounds = Math.max(1, ...block.exerciseLogs.map((el) => el.sets.length));
+    for (let round = 0; round < rounds; round++) {
+      block.exerciseLogs.forEach((el, exIndexInBlock) => {
+        if (round < el.sets.length) {
+          steps.push({
+            blockId: block.id,
+            exerciseId: el.exerciseId,
+            round,
+            exIndexInBlock,
+            groupSize: block.exerciseLogs.length,
+            isLastOfRound: exIndexInBlock === block.exerciseLogs.length - 1,
+          });
+        }
+      });
+    }
+  });
+  return steps;
+}
+
+// --- Timer #1 : chrono global de séance -------------------------------------------------
+// Toujours actif dès le lancement de la séance. Calculé à partir d'un horodatage de départ
+// fixe (startedAt), donc il continue de tourner pendant les pauses de récupération, les
+// changements d'exercice, etc. Il ne s'arrête que lorsque le composant est démonté (fin
+// de séance) ou lorsque la séance est enregistrée.
+function useSessionClock(startedAt) {
+  const [elapsedSec, setElapsedSec] = useState(() => Math.floor((Date.now() - startedAt) / 1000));
+  useEffect(() => {
+    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  return elapsedSec;
+}
+
+// --- Timer #2 : minuteur de récupération ------------------------------------------------
+// Totalement indépendant du chrono de séance. Peut être démarré, mis en pause, repris ou
+// arrêté sans jamais affecter le chrono global (qui tourne dans un hook séparé ci-dessus).
+function useRestTimer() {
+  const [rest, setRest] = useState(null); // { totalSec, remainingSec, paused } | null
+  const intervalRef = useRef(null);
 
   useEffect(() => {
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - workout.startedAt) / 1000)), 1000);
-    return () => clearInterval(t);
-  }, [workout.startedAt]);
-
-  useEffect(() => {
-    if (!restTimer || !restTimer.running) { clearInterval(restIntervalRef.current); return; }
-    restIntervalRef.current = setInterval(() => {
-      setRestTimer((rt) => {
-        if (!rt) return rt;
-        if (rt.remaining <= 1) { vibrate([300, 100, 300]); clearInterval(restIntervalRef.current); return null; }
-        return { ...rt, remaining: rt.remaining - 1 };
+    clearInterval(intervalRef.current);
+    if (!rest || rest.paused) return; // en pause -> le décompte ne bouge plus
+    intervalRef.current = setInterval(() => {
+      setRest((r) => {
+        if (!r || r.remainingSec <= 0) return r;
+        const next = r.remainingSec - 1;
+        if (next === 0) vibrate([300, 100, 300]); // vibration quand la récupération se termine
+        return { ...r, remainingSec: next };
       });
     }, 1000);
-    return () => clearInterval(restIntervalRef.current);
-  }, [restTimer?.running]);
+    return () => clearInterval(intervalRef.current);
+    // On ne relance l'intervalle que si l'état pause change ou qu'un nouveau timer démarre,
+    // jamais à chaque tick (remainingSec est mis à jour via la fonction de setRest ci-dessus).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rest?.paused, rest?.totalSec, !!rest]);
 
-  const tonnage = workout.exerciseLogs.reduce((a, el) => a + el.sets.reduce((b, s) => b + (s.done ? (Number(s.weight) || 0) * (Number(s.reps) || 0) : 0), 0), 0);
-  const totalSets = workout.exerciseLogs.reduce((a, el) => a + el.sets.filter((s) => s.done).length, 0);
-
-  const updateExerciseLog = (exerciseId, fn) => {
-    setWorkout((w) => ({ ...w, exerciseLogs: w.exerciseLogs.map((el) => (el.exerciseId === exerciseId ? fn({ ...el }) : el)) }));
+  return {
+    rest,
+    start: (sec) => setRest({ totalSec: sec, remainingSec: sec, paused: false }),
+    pause: () => setRest((r) => (r ? { ...r, paused: true } : r)),
+    resume: () => setRest((r) => (r ? { ...r, paused: false } : r)),
+    stop: () => setRest(null),
   };
+}
 
-  const startRest = (sec) => setRestTimer({ total: sec, remaining: sec, running: true });
-
-  const finishWorkout = () => {
-    const durationSec = Math.floor((Date.now() - workout.startedAt) / 1000);
-    const session = {
-      id: workout.id, programId: workout.programId, programName: workout.programName,
-      date: todayISO(), startedAt: workout.startedAt, durationSec, tonnage, totalSets,
-      exerciseLogs: workout.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) })),
-    };
-    onFinish(session);
-  };
-
+// --- En-tête fixe : chrono global toujours visible en haut de l'écran ------------------
+function SessionHeader({ theme, programName, elapsedSec, stepNumber, totalSteps, onCancel, onEndClick }) {
   return (
-    <div className="px-4 pt-2 pb-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <button onClick={onCancel} className="text-[13px] font-semibold" style={{ color: theme.textMuted }}>Annuler</button>
+    <div className="sticky top-0 z-30 px-4 pt-3 pb-3 backdrop-blur-xl" style={{ background: `${theme.bg}ee`, borderBottom: `1px solid ${theme.border}` }}>
+      <div className="flex items-center justify-between mb-2">
+        <button onClick={onCancel} className="text-[12.5px] font-semibold" style={{ color: theme.textMuted }}>Annuler</button>
         <div className="text-center">
-          <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{workout.programName}</p>
-          <p style={{ color: theme.textMuted }} className="text-[11.5px]">{fmtDuration(elapsed)}</p>
+          <p style={{ color: theme.text }} className="text-[13px] font-bold truncate max-w-[160px]">{programName}</p>
+          <p style={{ color: theme.textFaint }} className="text-[10.5px] font-semibold">Série {stepNumber} / {totalSteps}</p>
         </div>
-        <button onClick={() => setConfirmEnd(true)} className="text-[13px] font-bold" style={{ color: theme.accent }}>Terminer</button>
+        <button onClick={onEndClick} className="text-[13px] font-bold" style={{ color: theme.accent }}>Terminer</button>
       </div>
-
-      <div className="grid grid-cols-3 gap-2.5">
-        <Card theme={theme} className="p-3 text-center">
-          <p style={{ color: theme.text }} className="text-[16px] font-extrabold">{Math.round(tonnage).toLocaleString("fr-FR")}</p>
-          <p style={{ color: theme.textFaint }} className="text-[10px]">kg tonnage</p>
-        </Card>
-        <Card theme={theme} className="p-3 text-center">
-          <p style={{ color: theme.text }} className="text-[16px] font-extrabold">{totalSets}</p>
-          <p style={{ color: theme.textFaint }} className="text-[10px]">séries faites</p>
-        </Card>
-        <Card theme={theme} className="p-3 text-center">
-          <p style={{ color: theme.text }} className="text-[16px] font-extrabold">{fmtDuration(elapsed)}</p>
-          <p style={{ color: theme.textFaint }} className="text-[10px]">durée</p>
-        </Card>
-      </div>
-
-      <div className="space-y-3">
-        {workout.exerciseLogs.map((el) => (
-          <ExerciseLogCard key={el.exerciseId} theme={theme} log={el} sessions={sessions}
-            onChange={(fn) => updateExerciseLog(el.exerciseId, fn)}
-            onSetDone={() => startRest(el.restSec || restDefault)} />
-        ))}
-      </div>
-
-      <AnimatePresence>
-        {restTimer && <RestTimerBar theme={theme} restTimer={restTimer} setRestTimer={setRestTimer} />}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {confirmEnd && (
-          <ConfirmSheet theme={theme} title="Terminer la séance ?" subtitle={`${totalSets} séries · ${Math.round(tonnage).toLocaleString("fr-FR")} kg de tonnage`}
-            confirmLabel="Terminer" onConfirm={finishWorkout} onCancel={() => setConfirmEnd(false)} />
-        )}
-      </AnimatePresence>
+      <p style={{ color: theme.text }} className="text-[46px] font-extrabold tabular-nums text-center leading-none tracking-tight">{fmtClock(elapsedSec)}</p>
+      <p style={{ color: theme.textFaint }} className="text-[10px] text-center uppercase tracking-wide mt-1">Temps de séance</p>
     </div>
   );
 }
 
-function ExerciseLogCard({ theme, log, sessions, onChange, onSetDone }) {
+// --- Minuteur de récupération circulaire ------------------------------------------------
+// Le cercle se "vide" progressivement (stroke-dashoffset animé) pendant que le temps
+// restant diminue. Pause / Reprise ne touchent qu'à ce minuteur, jamais au chrono global.
+function RestTimerCircle({ theme, rest, onPauseResume, onSkip, size = 250 }) {
+  const stroke = 14;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = rest.totalSec ? Math.max(0, rest.remainingSec) / rest.totalSec : 0;
+  const finished = rest.remainingSec <= 0;
+
+  return (
+    <div className="flex flex-col items-center py-4">
+      <div style={{ width: size, height: size, position: "relative" }}>
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={theme.card2} strokeWidth={stroke} />
+          <motion.circle
+            cx={size / 2} cy={size / 2} r={r} fill="none"
+            stroke={finished ? theme.good : "url(#restCircleGrad)"} strokeWidth={stroke} strokeLinecap="round"
+            strokeDasharray={c}
+            animate={{ strokeDashoffset: c - pct * c }}
+            transition={{ duration: 0.9, ease: "linear" }}
+          />
+          <defs>
+            <linearGradient id="restCircleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor={theme.accent} />
+              <stop offset="100%" stopColor={theme.accent2} />
+            </linearGradient>
+          </defs>
+        </svg>
+        <div style={{ position: "absolute", inset: 0 }} className="flex flex-col items-center justify-center">
+          <Timer size={20} color={finished ? theme.good : theme.accent} className="mb-1.5" />
+          <p style={{ color: theme.text }} className="text-[44px] font-extrabold tabular-nums leading-none">{fmtClock(rest.remainingSec)}</p>
+          <motion.p
+            animate={finished ? { opacity: [1, 0.4, 1] } : { opacity: 1 }}
+            transition={finished ? { duration: 1.1, repeat: Infinity } : {}}
+            style={{ color: finished ? theme.good : theme.textMuted }} className="text-[12.5px] font-bold mt-2"
+          >
+            {finished ? "C'est reparti !" : "Récupération en cours"}
+          </motion.p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 mt-6 w-full">
+        <button
+          disabled={finished}
+          onClick={onPauseResume}
+          className="flex-1 rounded-2xl py-4 font-bold text-[15px] flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+          style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, opacity: finished ? 0.4 : 1 }}
+        >
+          {rest.paused ? <><Play size={16} fill={theme.text} /> Reprendre</> : <><Pause size={16} /> Pause</>}
+        </button>
+        <button
+          onClick={onSkip}
+          className="flex-1 rounded-2xl py-4 font-bold text-[15px] flex items-center justify-center gap-2 active:scale-[0.98] transition-transform text-white"
+          style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, boxShadow: `0 8px 24px -8px ${theme.accent}88` }}
+        >
+          <ChevronRight size={16} /> Série suivante
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Gros champ chiffré avec boutons +/- larges (adapté au tactile pendant l'effort) ---
+function BigNumberStepper({ theme, label, value, onChange, step = 1 }) {
+  const num = Number(value) || 0;
+  return (
+    <div className="rounded-2xl p-3" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+      <p style={{ color: theme.textFaint }} className="text-[10px] font-bold uppercase tracking-wide mb-2 text-center">{label}</p>
+      <div className="flex items-center justify-between gap-1.5">
+        <button onClick={() => onChange(String(Math.max(0, num - step)))} className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0" style={{ width: 42, height: 42, background: theme.bg }}>
+          <Minus size={16} color={theme.text} />
+        </button>
+        <input inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)}
+          className="flex-1 text-center bg-transparent outline-none font-extrabold text-[22px]" style={{ color: theme.text }} />
+        <button onClick={() => onChange(String(num + step))} className="rounded-xl flex items-center justify-center active:scale-90 transition-transform shrink-0" style={{ width: 42, height: 42, background: theme.bg }}>
+          <Plus size={16} color={theme.text} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Carte "exercice en cours" : nom, infos (séries/reps/charge), consignes, saisie -----
+// Compare la série en cours de saisie à la série équivalente (même numéro) de la dernière
+// séance sur cet exercice. Ne renvoie une indication QUE en cas de progression ou d'égalité
+// stricte — jamais d'indication négative/décourageante pendant l'entraînement.
+function compareToLast(currentSet, lastSet) {
+  if (!lastSet || !lastSet.weight || !lastSet.reps) return null;
+  const curW = Number(currentSet.weight) || 0;
+  const curR = Number(currentSet.reps) || 0;
+  if (!curW && !curR) return null; // rien saisi pour l'instant
+  const lastW = Number(lastSet.weight) || 0;
+  const lastR = Number(lastSet.reps) || 0;
+
+  if (curW > lastW) return { type: "up", label: `+${fmtNum(curW - lastW)} kg de progression` };
+  if (curW === lastW && curR > lastR) return { type: "up", label: `+${curR - lastR} rép. de progression` };
+  if (curW === lastW && curR === lastR) return { type: "same", label: "Même performance" };
+  return null; // en dessous de la dernière fois : on reste discret, pas de message négatif
+}
+
+// --- Carte "Dernière séance" : récap complet de la dernière fois + comparaison live ----
+// Affichée juste au-dessus de la zone de saisie poids/reps pendant l'entraînement.
+function LastSessionCard({ theme, last, currentSet }) {
+  if (!last) {
+    return (
+      <Card theme={theme} className="p-4 mb-4 flex items-center gap-2.5" style={{ background: `${theme.accent2}14`, border: `1px solid ${theme.accent2}33` }}>
+        <span className="text-[18px]">💪</span>
+        <p style={{ color: theme.text }} className="text-[13.5px] font-semibold">Première fois sur cet exercice</p>
+      </Card>
+    );
+  }
+
+  const doneSets = last.log.sets.filter((s) => s.done && (s.weight || s.reps));
+  // La comparaison porte sur la série de même numéro que celle en cours de saisie.
+  const lastSetSameRound = last.log.sets[currentSet.round];
+  const comparison = compareToLast(currentSet, lastSetSameRound);
+
+  return (
+    <Card theme={theme} className="p-4 mb-4" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+      <div className="flex items-center gap-1.5 mb-2.5">
+        <span style={{ color: theme.textFaint }} className="text-[10.5px] font-bold uppercase tracking-wide">Dernière séance</span>
+        <span style={{ color: theme.textMuted }} className="text-[11.5px]">📅 {fmtDate(last.session.date, { day: "numeric", month: "long", year: "numeric" })}</span>
+      </div>
+      <div className="space-y-1 mb-1">
+        {doneSets.length === 0 ? (
+          <p style={{ color: theme.textFaint }} className="text-[12.5px]">Aucune série enregistrée.</p>
+        ) : (
+          doneSets.map((s, i) => (
+            <p key={i} style={{ color: theme.textMuted }} className="text-[13px]">
+              Série {i + 1} : <span style={{ color: theme.text }} className="font-semibold">{s.reps || 0} reps à {fmtNum(s.weight)} kg</span>
+            </p>
+          ))
+        )}
+      </div>
+      {comparison && (
+        <div className="flex items-center gap-1.5 mt-2.5 pt-2.5" style={{ borderTop: `1px dashed ${theme.border}` }}>
+          {comparison.type === "up" ? <ArrowUp size={13} color={theme.good} /> : <Minus size={13} color={theme.textMuted} />}
+          <span className="text-[12.5px] font-bold" style={{ color: comparison.type === "up" ? theme.good : theme.textMuted }}>
+            {comparison.label}
+          </span>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// --- Carte "exercice verrouillé" : aperçu en lecture seule d'un exercice à venir --------
+// Rien n'y est interactif : ni le poids, ni les reps, ni les séries, ni l'ordre. Un tap
+// affiche un message explicatif au lieu d'ouvrir une édition.
+function ExerciseCardLocked({ theme, name, groupSize, letter, exIndexInBlock, totalRounds, targetReps, onLockedTap }) {
+  return (
+    <button
+      onClick={onLockedTap}
+      className="w-full text-left rounded-3xl p-4 flex items-center gap-3 active:scale-[0.99] transition-transform"
+      style={{ background: "rgba(20,20,22,0.7)", border: `1px solid ${theme.border}`, opacity: 0.6 }}
+    >
+      <span className="shrink-0 text-[17px]">🔒</span>
+      <div className="flex-1 min-w-0">
+        {groupSize > 1 && (
+          <span className="text-[10px] font-extrabold mr-1.5" style={{ color: theme.textFaint }}>
+            {groupLabel(groupSize)} · {letter}{exIndexInBlock + 1}
+          </span>
+        )}
+        <p style={{ color: theme.textMuted }} className="font-bold text-[15px] truncate">{name}</p>
+        <p style={{ color: theme.textFaint }} className="text-[12px] mt-0.5">{totalRounds} séries × {targetReps} reps</p>
+      </div>
+    </button>
+  );
+}
+
+// --- Ligne réordonnable (mode réorganisation) : un biset/triset/circuit se déplace comme
+// un seul bloc, jamais exercice par exercice, pour préserver son enchaînement A1/A2. -----
+function ReorderableBlockRow({ theme, block, onStartNow }) {
+  const names = block.exerciseLogs.map((el) => el.name);
+  const isGroup = names.length > 1;
+  return (
+    <Reorder.Item value={block}>
+      <Card theme={theme} className="p-3.5 flex items-center gap-3" style={{ background: theme.card2 }}>
+        <GripVertical size={17} color={theme.textFaint} className="cursor-grab shrink-0" />
+        <div className="flex-1 min-w-0">
+          {isGroup && (
+            <span className="px-2 py-0.5 rounded-full text-[9.5px] font-extrabold inline-block mb-1" style={{ background: theme.accent, color: "#fff" }}>
+              {groupLabel(names.length)}
+            </span>
+          )}
+          <p style={{ color: theme.text }} className="font-semibold text-[13.5px] truncate">{names.join(" + ")}</p>
+        </div>
+        <button
+          onClick={() => onStartNow(block.id)}
+          className="shrink-0 px-3.5 py-2.5 rounded-xl text-[11.5px] font-bold text-white active:scale-95 transition-transform"
+          style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` }}
+        >
+          Commencer
+        </button>
+      </Card>
+    </Reorder.Item>
+  );
+}
+
+// --- Carte "exercice actif" : entièrement interactive (poids, reps, validation) ---------
+function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, round, sessions, onChangeSet, onValidate, onRename, onAddSet }) {
   const last = useMemo(() => lastPerformanceFor(sessions, log.name), [sessions, log.name]);
   const pr = useMemo(() => {
     let best = null;
@@ -950,94 +2159,383 @@ function ExerciseLogCard({ theme, log, sessions, onChange, onSetDone }) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(log.name);
   useEffect(() => { setNameDraft(log.name); }, [log.name]);
+  const commitRename = () => { const n = nameDraft.trim() || log.name; onRename(n); setNameDraft(n); setEditingName(false); };
 
-  const setSet = (idx, patch) => onChange((l) => { const sets = [...l.sets]; sets[idx] = { ...sets[idx], ...patch }; return { ...l, sets }; });
-  const addSet = () => onChange((l) => ({ ...l, sets: [...l.sets, { weight: "", reps: "", done: false }] }));
-  const removeSet = (idx) => onChange((l) => ({ ...l, sets: l.sets.filter((_, i) => i !== idx) }));
-  const renameExercise = () => { const n = nameDraft.trim() || log.name; onChange((l) => ({ ...l, name: n })); setNameDraft(n); setEditingName(false); };
+  const set = log.sets[round] || { weight: "", reps: "" };
+  const totalRounds = log.sets.length;
 
   return (
-    <Card theme={theme} className="p-4">
-      <div className="flex items-center justify-between mb-1 gap-2">
-        {editingName ? (
-          <input
-            autoFocus value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={renameExercise} onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
-            className="flex-1 font-bold text-[15px] bg-transparent outline-none border-b"
-            style={{ color: theme.text, borderColor: theme.accent }}
-          />
-        ) : (
-          <button onClick={() => setEditingName(true)} className="flex-1 flex items-center gap-1.5 text-left">
-            <p style={{ color: theme.text }} className="font-bold text-[15px]">{log.name}</p>
-            <Edit2 size={12} color={theme.textFaint} className="shrink-0" />
-          </button>
+    <Card theme={theme} className="p-5">
+      {groupSize > 1 && (
+        <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-block mb-3" style={{ background: theme.accent, color: "#fff" }}>
+          {groupLabel(groupSize)} · {letter}{exIndexInBlock + 1}
+        </span>
+      )}
+
+      {editingName ? (
+        <input
+          autoFocus value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={commitRename} onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+          className="w-full text-[23px] font-extrabold bg-transparent outline-none border-b mb-1"
+          style={{ color: theme.text, borderColor: theme.accent }}
+        />
+      ) : (
+        <button onClick={() => setEditingName(true)} className="flex items-center gap-2 text-left mb-1">
+          <h2 style={{ color: theme.text }} className="text-[23px] font-extrabold leading-tight">{log.name}</h2>
+          <Edit2 size={14} color={theme.textFaint} className="shrink-0" />
+        </button>
+      )}
+      <p style={{ color: theme.accent }} className="text-[14px] font-bold mb-4">Série {round + 1} / {totalRounds}</p>
+
+      <div className="flex items-center gap-2 flex-wrap mb-4">
+        <span className="px-3 py-1.5 rounded-full text-[12px] font-semibold" style={{ background: theme.card2, color: theme.textMuted }}>
+          🎯 {log.targetReps} reps cible
+        </span>
+        {pr && (
+          <span className="px-3 py-1.5 rounded-full text-[12px] font-bold flex items-center gap-1" style={{ background: `${theme.accent2}22`, color: theme.accent2 }}>
+            <Trophy size={12} /> Record {pr}kg
+          </span>
         )}
-        <span style={{ color: theme.textFaint }} className="text-[11px] shrink-0">{log.targetReps} reps cible</span>
       </div>
-      <div className="flex items-center gap-3 mb-3">
-        {last && <p style={{ color: theme.textMuted }} className="text-[11.5px]">Dernière: {last.log.sets.filter((s) => s.done).map((s) => `${s.weight}×${s.reps}`).join(", ") || "—"}</p>}
-        {pr && <span className="flex items-center gap-1 text-[11.5px] font-semibold" style={{ color: theme.accent2 }}><Award size={11} /> PR {pr}kg</span>}
-      </div>
-      <div className="space-y-1.5">
-        <div className="grid items-center gap-2 px-1" style={{ gridTemplateColumns: "22px 1fr 1fr 34px 22px" }}>
-          <span />
-          <span style={{ color: theme.textFaint }} className="text-[10.5px] font-semibold">POIDS (KG)</span>
-          <span style={{ color: theme.textFaint }} className="text-[10.5px] font-semibold">REPS</span>
-          <span />
-          <span />
+
+      {log.notes && (
+        <div className="rounded-2xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: `${theme.accent}14` }}>
+          <Info size={14} color={theme.accent} className="mt-0.5 shrink-0" />
+          <p style={{ color: theme.text }} className="text-[13px] leading-snug">{log.notes}</p>
         </div>
-        {log.sets.map((s, idx) => (
-          <div key={idx} className="grid items-center gap-2" style={{ gridTemplateColumns: "22px 1fr 1fr 34px 22px" }}>
-            <span style={{ color: theme.textFaint }} className="text-[12px] font-bold text-center">{idx + 1}</span>
-            <input inputMode="decimal" placeholder="0" value={s.weight} onChange={(e) => setSet(idx, { weight: e.target.value })}
-              className="rounded-xl px-2.5 py-2.5 text-[15px] font-semibold outline-none text-center" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
-            <input inputMode="numeric" placeholder="0" value={s.reps} onChange={(e) => setSet(idx, { reps: e.target.value })}
-              className="rounded-xl px-2.5 py-2.5 text-[15px] font-semibold outline-none text-center" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
-            <button
-              onClick={() => { const nowDone = !s.done; setSet(idx, { done: nowDone }); if (nowDone) onSetDone(); }}
-              className="rounded-xl flex items-center justify-center active:scale-90 transition-transform"
-              style={{ width: 34, height: 40, background: s.done ? theme.good : theme.card2, border: `1px solid ${s.done ? theme.good : theme.border}` }}>
-              <Check size={16} color={s.done ? "#fff" : theme.textFaint} strokeWidth={3} />
-            </button>
-            <button onClick={() => removeSet(idx)} className="flex items-center justify-center active:scale-90 transition-transform" style={{ width: 22, height: 40 }}>
-              <X size={14} color={theme.textFaint} />
-            </button>
-          </div>
-        ))}
+      )}
+
+      <LastSessionCard theme={theme} last={last} currentSet={{ weight: set.weight, reps: set.reps, round }} />
+
+      <div className="grid grid-cols-2 gap-3 mb-5">
+        <BigNumberStepper theme={theme} label="Charge (kg)" value={set.weight} onChange={(v) => onChangeSet({ weight: v })} step={2.5} />
+        <BigNumberStepper theme={theme} label="Répétitions" value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={1} />
       </div>
-      <button onClick={addSet} className="mt-2.5 text-[12.5px] font-semibold flex items-center gap-1" style={{ color: theme.accent }}>
-        <Plus size={13} /> Ajouter une série
+
+      <BigButton theme={theme} gradient onClick={onValidate}>
+        <Check size={18} strokeWidth={3} /> Valider la série
+      </BigButton>
+
+      <button onClick={onAddSet} className="w-full text-center mt-3 text-[12.5px] font-semibold" style={{ color: theme.textMuted }}>
+        + Ajouter une série bonus à cet exercice
       </button>
     </Card>
   );
 }
 
-function RestTimerBar({ theme, restTimer, setRestTimer }) {
-  const pct = restTimer.remaining / restTimer.total;
-  return (
-    <motion.div initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
-      className="fixed left-0 right-0 bottom-24 flex justify-center z-40 px-4" style={{ maxWidth: 480, margin: "0 auto" }}>
-      <div className="w-full rounded-2xl p-3.5 flex items-center gap-3 backdrop-blur-xl" style={{ maxWidth: 448, background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.4)" }}>
-        <div style={{ position: "relative", width: 40, height: 40 }}>
-          <svg width={40} height={40} style={{ transform: "rotate(-90deg)" }}>
-            <circle cx={20} cy={20} r={16} fill="none" stroke={theme.card2} strokeWidth={4} />
-            <circle cx={20} cy={20} r={16} fill="none" stroke={theme.accent} strokeWidth={4} strokeLinecap="round" strokeDasharray={2 * Math.PI * 16} strokeDashoffset={2 * Math.PI * 16 * (1 - pct)} />
-          </svg>
-          <Timer size={14} color={theme.accent} style={{ position: "absolute", inset: 0, margin: "auto" }} />
-        </div>
-        <div className="flex-1">
-          <p style={{ color: theme.text }} className="font-bold text-[16px] tabular-nums">{Math.floor(restTimer.remaining / 60)}:{String(restTimer.remaining % 60).padStart(2, "0")}</p>
-          <p style={{ color: theme.textMuted }} className="text-[11px]">Repos en cours</p>
-        </div>
-        <button onClick={() => setRestTimer((rt) => ({ ...rt, running: !rt.running }))} className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90" style={{ background: theme.card2 }}>
-          {restTimer.running ? <Pause size={14} color={theme.text} /> : <Play size={14} color={theme.text} />}
-        </button>
-        <button onClick={() => setRestTimer((rt) => ({ ...rt, remaining: rt.remaining + 15, total: rt.total + 15 }))} className="text-[11px] font-bold px-2" style={{ color: theme.textMuted }}>+15s</button>
-        <button onClick={() => setRestTimer(null)} className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90" style={{ background: theme.card2 }}>
-          <X size={14} color={theme.text} />
-        </button>
+// --- Orchestrateur principal du mode entraînement --------------------------------------
+// Regroupe l'état global de la séance : étape courante (exercice + série), phase
+// ('set' = saisie en cours, 'rest' = récupération, 'done' = séance terminée), chrono
+// global (toujours actif) et minuteur de récupération (pilotable indépendamment).
+function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, restDefault, onStatusChange }) {
+  // Le mode entraînement reste toujours en thème sombre, quel que soit le réglage
+  // clair/sombre choisi ailleurs dans l'app (comme les apps fitness pro).
+  const theme = useTheme(true);
+
+  const elapsedSec = useSessionClock(workout.startedAt);
+  const { rest, start: startRest, pause: pauseRest, resume: resumeRest, stop: stopRest } = useRestTimer();
+
+  const steps = useMemo(() => buildSessionSteps(workout.blocks), [workout.blocks]);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [phase, setPhase] = useState("set"); // 'set' | 'rest' | 'done'
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [lockedHint, setLockedHint] = useState(false); // message temporaire "exercice verrouillé"
+  const [reorderMode, setReorderMode] = useState(false); // mode réorganisation de la suite de la séance
+  const [pendingJump, setPendingJump] = useState(null); // blockId à activer dès que `steps` se recalcule
+
+  const step = steps[stepIndex] || null;
+  const block = step ? workout.blocks.find((b) => b.id === step.blockId) : null;
+  const log = step && block ? block.exerciseLogs.find((el) => el.exerciseId === step.exerciseId) : null;
+  const letters = useMemo(() => computeGroupLetters(workout.blocks.map((b) => ({ id: b.id, exercises: b.exerciseLogs }))), [workout.blocks]);
+
+  // Remonte un instantané léger (nom d'exercice, chrono, phase, repos restant) vers App,
+  // pour la bannière persistante affichée sur les autres onglets. Ne pilote rien ici :
+  // WorkoutSession reste seul maître de son propre état, ceci n'est qu'un aperçu diffusé.
+  useEffect(() => {
+    if (!onStatusChange) return;
+    onStatusChange({
+      exerciseName: log?.name || "",
+      elapsedSec,
+      phase,
+      restRemaining: rest ? rest.remainingSec : null,
+    });
+  }, [onStatusChange, log?.name, elapsedSec, phase, rest?.remainingSec]);
+
+  // Liste des exercices à venir (verrouillés) : un exercice par entrée (dédupliqué),
+  // dans l'ordre de la séance, en excluant l'exercice actuellement actif.
+  const upcomingExercises = useMemo(() => {
+    if (!step) return [];
+    const seen = new Set([step.exerciseId]);
+    const list = [];
+    for (let i = stepIndex + 1; i < steps.length; i++) {
+      const s = steps[i];
+      if (seen.has(s.exerciseId)) continue;
+      seen.add(s.exerciseId);
+      const b = workout.blocks.find((bl) => bl.id === s.blockId);
+      const l = b?.exerciseLogs.find((el) => el.exerciseId === s.exerciseId);
+      if (!l) continue;
+      list.push({
+        exerciseId: s.exerciseId, name: l.name, targetReps: l.targetReps, totalRounds: l.sets.length,
+        groupSize: s.groupSize, letter: letters[s.blockId], exIndexInBlock: s.exIndexInBlock,
+      });
+    }
+    return list;
+  }, [steps, stepIndex, workout.blocks, letters, step]);
+
+  // Liste des BLOCS à venir (unité de réorganisation) : un biset/triset/circuit se déplace
+  // toujours comme un seul bloc, jamais exercice par exercice, pour ne pas casser son
+  // enchaînement A1/A2. Seuls les blocs strictement après le bloc actif sont concernés :
+  // le bloc en cours et tout ce qui le précède ne bougent jamais.
+  const upcomingBlocks = useMemo(() => {
+    if (!step) return [];
+    const idx = workout.blocks.findIndex((b) => b.id === step.blockId);
+    return idx === -1 ? [] : workout.blocks.slice(idx + 1);
+  }, [workout.blocks, step]);
+
+  // Réordonne la suite de la séance : seule la portion "à venir" est remplacée, donc le
+  // nombre d'étapes avant/à l'exercice actif ne change pas -> `stepIndex` reste valide.
+  const reorderUpcomingBlocks = (newUpcomingOrder) => {
+    setWorkout((w) => {
+      const idx = w.blocks.findIndex((b) => b.id === step.blockId);
+      if (idx === -1) return w;
+      return { ...w, blocks: [...w.blocks.slice(0, idx + 1), ...newUpcomingOrder] };
+    });
+  };
+
+  // "Commencer maintenant" : place l'exercice choisi juste après le bloc actif, puis
+  // demande à activer ce bloc dès que possible (voir l'effet ci-dessous). Le bloc
+  // actuellement en cours n'est ni modifié ni supprimé : ses séries restantes réapparaîtront
+  // simplement plus tard dans la séance, à leur nouvelle position.
+  const startBlockNow = (blockId) => {
+    setWorkout((w) => {
+      const curIdx = w.blocks.findIndex((b) => b.id === step.blockId);
+      const targetIdx = w.blocks.findIndex((b) => b.id === blockId);
+      if (curIdx === -1 || targetIdx <= curIdx) return w;
+      const target = w.blocks[targetIdx];
+      const without = w.blocks.filter((b) => b.id !== blockId);
+      const insertAt = without.findIndex((b) => b.id === step.blockId) + 1;
+      return { ...w, blocks: [...without.slice(0, insertAt), target, ...without.slice(insertAt)] };
+    });
+    setReorderMode(false);
+    setPendingJump(blockId);
+  };
+
+  // Une fois `steps` recalculé après le déplacement ci-dessus, on saute directement à la
+  // première étape (première série) du bloc choisi.
+  useEffect(() => {
+    if (!pendingJump) return;
+    const idx = steps.findIndex((s) => s.blockId === pendingJump);
+    if (idx !== -1) {
+      stopRest();
+      setStepIndex(idx);
+      setPhase("set");
+    }
+    setPendingJump(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingJump, steps]);
+
+  // Affiche brièvement le message "verrouillé" puis le referme tout seul.
+  useEffect(() => {
+    if (!lockedHint) return;
+    const t = setTimeout(() => setLockedHint(false), 2200);
+    return () => clearTimeout(t);
+  }, [lockedHint]);
+
+  const allLogs = workout.blocks.flatMap((b) => b.exerciseLogs);
+  const tonnage = allLogs.reduce((a, el) => a + el.sets.reduce((b, s) => b + (s.done ? (Number(s.weight) || 0) * (Number(s.reps) || 0) : 0), 0), 0);
+  const totalSets = allLogs.reduce((a, el) => a + el.sets.filter((s) => s.done).length, 0);
+
+  // Met à jour la série en cours (poids / reps / done) de l'étape active.
+  const updateCurrentSet = (patch) => {
+    if (!step) return;
+    setWorkout((w) => ({
+      ...w,
+      blocks: w.blocks.map((b) => (b.id !== step.blockId ? b : {
+        ...b,
+        exerciseLogs: b.exerciseLogs.map((el) => (el.exerciseId !== step.exerciseId ? el : {
+          ...el, sets: el.sets.map((s, i) => (i === step.round ? { ...s, ...patch } : s)),
+        })),
+      })),
+    }));
+  };
+
+  const renameCurrentExercise = (name) => {
+    if (!step) return;
+    setWorkout((w) => ({
+      ...w,
+      blocks: w.blocks.map((b) => (b.id !== step.blockId ? b : {
+        ...b, exerciseLogs: b.exerciseLogs.map((el) => (el.exerciseId !== step.exerciseId ? el : { ...el, name })),
+      })),
+    }));
+  };
+
+  const addBonusSetToCurrentExercise = () => {
+    if (!step) return;
+    setWorkout((w) => ({
+      ...w,
+      blocks: w.blocks.map((b) => (b.id !== step.blockId ? b : {
+        ...b, exerciseLogs: b.exerciseLogs.map((el) => (el.exerciseId !== step.exerciseId ? el : { ...el, sets: [...el.sets, { weight: "", reps: "", done: false }] })),
+      })),
+    }));
+  };
+
+  // Passe à l'étape suivante (série suivante ou exercice suivant). Appelé soit
+  // automatiquement (fin du repos), soit manuellement ("Série suivante" / "Passer").
+  const goToNextStep = () => {
+    stopRest();
+    if (stepIndex + 1 >= steps.length) { setPhase("done"); return; }
+    setStepIndex((i) => i + 1);
+    setPhase("set");
+  };
+
+  // Valide la série affichée à l'écran :
+  //  - si c'est le DERNIER exercice du tour (cas normal, ou dernier maillon d'un
+  //    biset/triset/circuit) -> on lance le minuteur de récupération.
+  //  - sinon (ex: A1 dans un biset) -> on enchaîne IMMÉDIATEMENT sur l'exercice suivant,
+  //    sans jamais démarrer de repos entre les deux.
+  const validateCurrentSet = () => {
+    if (!step) return;
+    updateCurrentSet({ done: true, completedAt: Date.now() });
+    const isVeryLastStep = stepIndex + 1 >= steps.length;
+    if (step.isLastOfRound) {
+      if (isVeryLastStep) { setPhase("done"); return; }
+      startRest(block.restSec || restDefault);
+      setPhase("rest");
+    } else {
+      goToNextStep();
+    }
+  };
+
+  const finishWorkout = () => {
+    const durationSec = Math.floor((Date.now() - workout.startedAt) / 1000);
+    const session = {
+      id: workout.id, programId: workout.programId, programName: workout.programName,
+      date: todayISO(), startedAt: workout.startedAt, durationSec, tonnage, totalSets,
+      blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId) })),
+      exerciseLogs: workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
+    };
+    onFinish(session);
+  };
+
+  if (steps.length === 0) {
+    return (
+      <div className="px-4 pt-6 space-y-4">
+        <EmptyState theme={theme} icon={Dumbbell} title="Programme vide" subtitle="Ajoute des exercices à ce programme avant de démarrer une séance." />
+        <BigButton theme={theme} onClick={onCancel}>Retour</BigButton>
       </div>
-    </motion.div>
+    );
+  }
+
+  return (
+    <div style={{ background: theme.bg }} className="gt-app-shell">
+      <SessionHeader
+        theme={theme} programName={workout.programName} elapsedSec={elapsedSec}
+        stepNumber={Math.min(stepIndex + 1, steps.length)} totalSteps={steps.length}
+        onCancel={onCancel} onEndClick={() => setConfirmEnd(true)}
+      />
+
+      <div className="px-4 pb-8 pt-4">
+        <AnimatePresence mode="wait">
+          {phase === "rest" && rest ? (
+            <motion.div key="rest" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
+              <RestTimerCircle
+                theme={theme} rest={rest}
+                onPauseResume={() => (rest.paused ? resumeRest() : pauseRest())}
+                onSkip={goToNextStep}
+              />
+              {steps[stepIndex + 1] && (() => {
+                const nextStep = steps[stepIndex + 1];
+                const nextBlock = workout.blocks.find((b) => b.id === nextStep.blockId);
+                const nextLog = nextBlock?.exerciseLogs.find((el) => el.exerciseId === nextStep.exerciseId);
+                return (
+                  <Card theme={theme} className="p-4 mt-1">
+                    <p style={{ color: theme.textFaint }} className="text-[10.5px] font-bold uppercase tracking-wide mb-1">À suivre</p>
+                    <p style={{ color: theme.text }} className="font-bold text-[15px]">{nextLog?.name}</p>
+                  </Card>
+                );
+              })()}
+            </motion.div>
+          ) : phase === "done" ? (
+            <motion.div key="done" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-8 text-center">
+              <div className="rounded-full flex items-center justify-center mx-auto mb-4" style={{ width: 76, height: 76, background: `${theme.good}22` }}>
+                <CheckCircle2 size={36} color={theme.good} />
+              </div>
+              <h2 style={{ color: theme.text }} className="text-[23px] font-extrabold mb-1">Séance terminée !</h2>
+              <p style={{ color: theme.textMuted }} className="text-[13.5px] mb-6">
+                {fmtDuration(elapsedSec)} · {totalSets} séries · {Math.round(tonnage).toLocaleString("fr-FR")} kg
+              </p>
+              <BigButton theme={theme} gradient onClick={finishWorkout}><Save size={17} /> Enregistrer la séance</BigButton>
+            </motion.div>
+          ) : (
+            step && log && (
+              <motion.div key={stepIndex} initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }} transition={{ duration: 0.2 }}>
+                <ExerciseCardActive
+                  theme={theme} log={log} groupSize={step.groupSize} letter={letters[block.id]}
+                  exIndexInBlock={step.exIndexInBlock} round={step.round} sessions={sessions}
+                  onChangeSet={updateCurrentSet} onValidate={validateCurrentSet}
+                  onRename={renameCurrentExercise} onAddSet={addBonusSetToCurrentExercise}
+                />
+              </motion.div>
+            )
+          )}
+        </AnimatePresence>
+
+        {/* Aperçu de la suite de la séance : verrouillé par défaut, non interactif.
+            Le bouton "Modifier l'ordre" bascule vers un mode où l'utilisateur peut
+            glisser-déposer les exercices à venir, ou en démarrer un immédiatement.
+            L'exercice actif redevient automatiquement normal / verrouillé au fil de la
+            séance (goToNextStep), sans intervention supplémentaire ici. */}
+        {phase !== "done" && upcomingExercises.length > 0 && (
+          <div className="mt-4 space-y-2.5">
+            <div className="flex items-center justify-between px-1">
+              <p style={{ color: theme.textFaint }} className="text-[11px] font-bold uppercase tracking-wide">Exercices suivants</p>
+              <button
+                onClick={() => setReorderMode((v) => !v)}
+                className="flex items-center gap-1.5 text-[11.5px] font-bold active:scale-95 transition-transform"
+                style={{ color: reorderMode ? theme.good : theme.accent }}
+              >
+                <ArrowUpDown size={13} /> {reorderMode ? "Terminé" : "Modifier l'ordre"}
+              </button>
+            </div>
+
+            {reorderMode ? (
+              <>
+                <p style={{ color: theme.textFaint }} className="text-[11.5px] px-1 -mt-1">
+                  Glisse pour réordonner, ou tape "Commencer" pour passer directement à un exercice.
+                </p>
+                <Reorder.Group axis="y" values={upcomingBlocks} onReorder={reorderUpcomingBlocks} className="space-y-2">
+                  {upcomingBlocks.map((b) => (
+                    <ReorderableBlockRow key={b.id} theme={theme} block={b} onStartNow={startBlockNow} />
+                  ))}
+                </Reorder.Group>
+              </>
+            ) : (
+              upcomingExercises.map((ex) => (
+                <ExerciseCardLocked key={ex.exerciseId} theme={theme} {...ex} onLockedTap={() => setLockedHint(true)} />
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {lockedHint && (
+          <motion.div initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }}
+            className="fixed left-0 right-0 bottom-6 flex justify-center z-40 px-6 pointer-events-none" style={{ maxWidth: 480, margin: "0 auto" }}>
+            <div className="rounded-2xl px-4 py-3 text-center text-[13px] font-semibold" style={{ background: theme.card, color: theme.text, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}>
+              🔒 Terminez l'exercice actuel avant de modifier celui-ci.
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmEnd && (
+          <ConfirmSheet theme={theme} title="Terminer la séance ?" subtitle={`${totalSets} séries · ${Math.round(tonnage).toLocaleString("fr-FR")} kg de tonnage`}
+            confirmLabel="Terminer" onConfirm={finishWorkout} onCancel={() => setConfirmEnd(false)} />
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -1129,19 +2627,43 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate }) {
         <Card theme={theme} className="p-3 text-center"><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{fmtDuration(session.durationSec || 0)}</p><p style={{ color: theme.textFaint }} className="text-[10px]">durée</p></Card>
       </div>
       <div className="space-y-2.5">
-        {session.exerciseLogs.map((el) => (
-          <Card theme={theme} className="p-4" key={el.exerciseId}>
-            <p style={{ color: theme.text }} className="font-bold text-[14.5px] mb-2">{el.name}</p>
-            <div className="space-y-1">
-              {el.sets.map((s, i) => (
-                <div key={i} className="flex items-center justify-between text-[13px]" style={{ color: s.done ? theme.text : theme.textFaint }}>
-                  <span>Série {i + 1}</span>
-                  <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}</span>
+        {(() => {
+          const byId = Object.fromEntries(session.exerciseLogs.map((el) => [el.exerciseId, el]));
+          const blocks = (session.blocks && session.blocks.length ? session.blocks : session.exerciseLogs.map((el) => ({ id: el.exerciseId, restSec: null, exerciseIds: [el.exerciseId] })));
+          const letters = computeGroupLetters(blocks.map((b) => ({ id: b.id, exercises: b.exerciseIds })));
+          return blocks.map((b) => {
+            const logs = b.exerciseIds.map((id) => byId[id]).filter(Boolean);
+            if (logs.length === 0) return null;
+            const isGroup = logs.length > 1;
+            return (
+              <Card theme={theme} className="p-4" key={b.id} style={isGroup ? { border: `1.5px solid ${theme.accent}55` } : {}}>
+                {isGroup && (
+                  <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-block mb-3" style={{ background: theme.accent, color: "#fff" }}>
+                    {groupLabel(logs.length)}
+                  </span>
+                )}
+                <div className={isGroup ? "space-y-3" : ""}>
+                  {logs.map((el, i) => (
+                    <div key={el.exerciseId} className={isGroup && i > 0 ? "pt-3" : ""} style={isGroup && i > 0 ? { borderTop: `1px dashed ${theme.border}` } : {}}>
+                      <p style={{ color: theme.text }} className="font-bold text-[14.5px] mb-2">
+                        {isGroup && <span style={{ color: theme.accent }} className="mr-1.5">{letters[b.id]}{i + 1}</span>}
+                        {el.name}
+                      </p>
+                      <div className="space-y-1">
+                        {el.sets.map((s, si) => (
+                          <div key={si} className="flex items-center justify-between text-[13px]" style={{ color: s.done ? theme.text : theme.textFaint }}>
+                            <span>Série {si + 1}</span>
+                            <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </Card>
-        ))}
+              </Card>
+            );
+          });
+        })()}
       </div>
       <div className="grid grid-cols-2 gap-2.5 pt-2">
         <BigButton theme={theme} onClick={() => onDuplicate(session)}><Copy size={15} /> Dupliquer</BigButton>
@@ -1165,7 +2687,7 @@ const PERIODS = [
 function ProgressPage({ theme, sessions, programs }) {
   const allExercises = useMemo(() => {
     const names = new Set();
-    programs.forEach((p) => p.exercises.forEach((e) => names.add(e.name)));
+    programs.forEach((p) => flattenExercises(p.blocks).forEach((e) => names.add(e.name)));
     sessions.forEach((s) => s.exerciseLogs.forEach((e) => names.add(e.name)));
     return Array.from(names).sort();
   }, [programs, sessions]);
@@ -1513,12 +3035,12 @@ function StatsPage({ theme, sessions, programs, onExport, onImport }) {
         <StatBox theme={theme} icon={Flame} label="Tonnage total" value={Math.round(totalTonnage).toLocaleString("fr-FR") + " kg"} />
         <StatBox theme={theme} icon={BarChart3} label="Répétitions totales" value={totalReps.toLocaleString("fr-FR")} />
         <StatBox theme={theme} icon={Calendar} label="Fréquence" value={frequency ? `${frequency}/sem` : "—"} />
-        <StatBox theme={theme} icon={Award} label="Série la plus lourde" value={heaviestSet ? `${heaviestSet.weight}kg` : "—"} />
+        <StatBox theme={theme} icon={Trophy} label="Série la plus lourde" value={heaviestSet ? `${heaviestSet.weight}kg` : "—"} />
       </div>
 
       {favoriteExercise && (
         <Card theme={theme} className="p-4 flex items-center gap-3">
-          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 44, height: 44, background: `${theme.accent}18` }}><Dumbbell size={18} color={theme.accent} /></div>
+          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 44, height: 44, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` }}><Dumbbell size={18} color="#fff" /></div>
           <div><p style={{ color: theme.textMuted }} className="text-[11.5px] font-semibold">Exercice favori</p><p style={{ color: theme.text }} className="font-bold text-[15px]">{favoriteExercise}</p></div>
         </Card>
       )}
@@ -1559,8 +3081,8 @@ function StatsPage({ theme, sessions, programs, onExport, onImport }) {
 function StatBox({ theme, icon: Icon, label, value }) {
   return (
     <Card theme={theme} className="p-3.5">
-      <Icon size={14} color={theme.accent} className="mb-1.5" />
-      <p style={{ color: theme.text }} className="text-[16px] font-extrabold leading-tight">{value}</p>
+      <IconBadge theme={theme} icon={Icon} size={30} iconSize={15} tone="accent" className="mb-1.5" />
+      <p style={{ color: theme.text }} className="text-[16px] font-extrabold leading-tight mt-1.5">{value}</p>
       <p style={{ color: theme.textMuted }} className="text-[10.5px] mt-0.5">{label}</p>
     </Card>
   );
