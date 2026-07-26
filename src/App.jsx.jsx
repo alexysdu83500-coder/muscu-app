@@ -13,6 +13,35 @@ import {
   Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User,
 } from "lucide-react";
 
+/* ============================== STOCKAGE (localStorage) ============================== */
+// `window.storage` (get/set/delete/list) est une API fournie automatiquement par
+// l'environnement d'aperçu de Claude.ai — elle N'EXISTE PAS une fois le site déployé
+// ailleurs (GitHub Pages, Vercel, ton propre hébergement...). Ce petit bloc ne s'active
+// QUE si `window.storage` n'existe pas déjà : dans l'aperçu Claude, rien ne change ; sur
+// ton site déployé, il fournit une implémentation réelle basée sur `localStorage` (natif
+// au navigateur, persiste réellement après un rafraîchissement de page).
+if (typeof window !== "undefined" && !window.storage) {
+  window.storage = {
+    async get(key) {
+      const value = window.localStorage.getItem(key);
+      if (value == null) throw new Error(`gt-storage: clé "${key}" introuvable`);
+      return { key, value };
+    },
+    async set(key, value) {
+      window.localStorage.setItem(key, value);
+      return { key, value };
+    },
+    async delete(key) {
+      window.localStorage.removeItem(key);
+      return { key, deleted: true };
+    },
+    async list(prefix) {
+      const keys = Object.keys(window.localStorage).filter((k) => !prefix || k.startsWith(prefix));
+      return { keys };
+    },
+  };
+}
+
 /* ============================== UTILITIES ============================== */
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -1610,7 +1639,7 @@ function PairExerciseSheet({ theme, title, candidates, onClose, onPickExisting, 
   const [reps, setReps] = useState(10);
 
   return (
-    <motion.div className="fixed inset-0 z-[100] flex items-end justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: "85vh", overflowY: "auto" }}>
@@ -1698,7 +1727,7 @@ function AddExerciseSheet({ theme, onClose, onAdd }) {
   const filtered = name ? COMMON_EXERCISES.filter((e) => e.toLowerCase().includes(name.toLowerCase())) : COMMON_EXERCISES.slice(0, 5);
 
   return (
-    <motion.div className="fixed inset-0 z-[100] flex items-end justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
@@ -2361,12 +2390,20 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   // Supprime les clés de progression propres à CETTE séance (étape, phase, minuteur de
   // repos) une fois qu'elle est terminée ou annulée — la séance elle-même (`activeWorkout`)
   // est déjà remise à null par App à ce moment-là, ceci ne fait que nettoyer le stockage.
+  // Entièrement défensif : ne doit JAMAIS lever d'exception, sous peine de bloquer les
+  // boutons Enregistrer/Annuler qui l'appellent (c'était une cause possible du bug).
   const cleanupRuntimeStorage = () => {
-    ["gt_step_", "gt_phase_", "gt_rest_"].forEach((prefix) => {
-      window.storage.delete(`${prefix}${workout.id}`, false).catch(() => {});
-    });
+    try {
+      ["gt_step_", "gt_phase_", "gt_rest_"].forEach((prefix) => {
+        try {
+          window.storage?.delete?.(`${prefix}${workout.id}`, false)?.catch?.(() => {});
+        } catch (e) { /* ignore : le nettoyage est un bonus, pas une condition de succès */ }
+      });
+    } catch (e) { /* ignore */ }
   };
-  const handleCancel = () => { cleanupRuntimeStorage(); onCancel(); };
+  // L'action réelle (fermer/annuler) s'exécute D'ABORD, le nettoyage du stockage ensuite :
+  // même si le nettoyage échouait, le bouton doit quand même avoir fait son travail.
+  const handleCancel = () => { onCancel(); cleanupRuntimeStorage(); };
 
   const finishWorkout = () => {
     const durationSec = Math.floor((Date.now() - workout.startedAt) / 1000);
@@ -2376,8 +2413,8 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
       blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId) })),
       exerciseLogs: workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
     };
-    cleanupRuntimeStorage();
     onFinish(session);
+    cleanupRuntimeStorage();
   };
 
   if (steps.length === 0) {
@@ -2516,7 +2553,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
 
 function ConfirmSheet({ theme, title, subtitle, confirmLabel, onConfirm, onCancel, danger }) {
   return (
-    <motion.div className="fixed inset-0 z-[100] flex items-end justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onCancel} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="relative w-full rounded-t-3xl p-5 pb-8 text-center" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
@@ -2946,7 +2983,7 @@ function AddWeightSheet({ theme, onClose, onAdd }) {
   const [bodyfat, setBodyfat] = useState("");
   const [comment, setComment] = useState("");
   return (
-    <motion.div className="fixed inset-0 z-[100] flex items-end justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
