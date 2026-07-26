@@ -1062,7 +1062,11 @@ function ProfileHub({
     return (
       <div>
         <SubPageHeader theme={theme} title="Historique séances" onBack={() => setView(null)} />
-        <HistoryList theme={theme} sessions={sessions} onOpen={(id) => { setSessionId(id); setView("sessionDetail"); }} />
+        <HistoryList
+          theme={theme} sessions={sessions}
+          onOpen={(id) => { setSessionId(id); setView("sessionDetail"); }}
+          onEdit={(id) => { setSessionId(id); setView("sessionEdit"); }}
+        />
       </div>
     );
   }
@@ -1074,6 +1078,25 @@ function ProfileHub({
         onBack={() => setView("history")}
         onDelete={(id) => { setSessions((s) => s.filter((x) => x.id !== id)); setView("history"); }}
         onDuplicate={(session) => onStartProgram(programFromSession(session))}
+        onEdit={(id) => { setSessionId(id); setView("sessionEdit"); }}
+      />
+    );
+  }
+
+  if (view === "sessionEdit") {
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) { setView("history"); return null; }
+    return (
+      <EditSessionScreen
+        theme={theme} session={session}
+        onCancel={() => setView("sessionDetail")}
+        onSave={(updated) => {
+          // Ne remplace QUE la séance modifiée — le tableau `sessions` garde toutes les
+          // autres inchangées. Records, progression et statistiques se recalculent tout
+          // seuls au rendu suivant puisqu'ils lisent toujours `sessions` directement.
+          setSessions((all) => all.map((s) => (s.id === updated.id ? updated : s)));
+          setView("sessionDetail");
+        }}
       />
     );
   }
@@ -2571,7 +2594,7 @@ function ConfirmSheet({ theme, title, subtitle, confirmLabel, onConfirm, onCance
 
 /* ============================== HISTORY ============================== */
 
-function HistoryList({ theme, sessions, onOpen }) {
+function HistoryList({ theme, sessions, onOpen, onEdit }) {
   const [query, setQuery] = useState("");
   const filtered = sessions.filter((s) => s.programName.toLowerCase().includes(query.toLowerCase()));
   const grouped = useMemo(() => {
@@ -2597,22 +2620,32 @@ function HistoryList({ theme, sessions, onOpen }) {
           <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide mb-2 px-1 capitalize">{month}</p>
           <Card theme={theme}>
             {list.map((s, i) => (
-              <button key={s.id} onClick={() => onOpen(s.id)} className="w-full px-4 py-3.5 flex items-center justify-between text-left" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
-                <div className="flex items-center gap-3">
-                  <div className="rounded-2xl flex flex-col items-center justify-center shrink-0" style={{ width: 44, height: 44, background: theme.card2 }}>
-                    <span style={{ color: theme.text }} className="text-[13px] font-extrabold leading-none">{fmtDate(s.date, { day: "numeric" })}</span>
-                    <span style={{ color: theme.textFaint }} className="text-[8.5px] font-semibold uppercase">{fmtDate(s.date, { month: "short" })}</span>
+              <div key={s.id} className="w-full px-4 py-3.5 flex items-center gap-2" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
+                <button onClick={() => onOpen(s.id)} className="flex-1 flex items-center justify-between text-left min-w-0">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="rounded-2xl flex flex-col items-center justify-center shrink-0" style={{ width: 44, height: 44, background: theme.card2 }}>
+                      <span style={{ color: theme.text }} className="text-[13px] font-extrabold leading-none">{fmtDate(s.date, { day: "numeric" })}</span>
+                      <span style={{ color: theme.textFaint }} className="text-[8.5px] font-semibold uppercase">{fmtDate(s.date, { month: "short" })}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <p style={{ color: theme.text }} className="font-semibold text-[14.5px] truncate">{s.programName}</p>
+                      <p style={{ color: theme.textMuted }} className="text-[12px]">{fmtDuration(s.durationSec || 0)} · {s.totalSets} séries</p>
+                    </div>
                   </div>
-                  <div>
-                    <p style={{ color: theme.text }} className="font-semibold text-[14.5px]">{s.programName}</p>
-                    <p style={{ color: theme.textMuted }} className="text-[12px]">{fmtDuration(s.durationSec || 0)} · {s.totalSets} séries</p>
+                  <div className="text-right flex items-center gap-1.5 shrink-0 pl-2">
+                    <p style={{ color: theme.accent }} className="text-[13px] font-bold">{Math.round(s.tonnage).toLocaleString("fr-FR")}kg</p>
+                    <ChevronRight size={14} color={theme.textFaint} />
                   </div>
-                </div>
-                <div className="text-right flex items-center gap-1.5">
-                  <p style={{ color: theme.accent }} className="text-[13px] font-bold">{Math.round(s.tonnage).toLocaleString("fr-FR")}kg</p>
-                  <ChevronRight size={14} color={theme.textFaint} />
-                </div>
-              </button>
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onEdit(s.id); }}
+                  className="shrink-0 rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                  style={{ width: 34, height: 34, background: theme.card2, border: `1px solid ${theme.border}` }}
+                  aria-label="Modifier la séance"
+                >
+                  <Edit2 size={14} color={theme.textMuted} />
+                </button>
+              </div>
             ))}
           </Card>
         </div>
@@ -2621,18 +2654,25 @@ function HistoryList({ theme, sessions, onOpen }) {
   );
 }
 
-function SessionDetail({ theme, session, onBack, onDelete, onDuplicate }) {
+function SessionDetail({ theme, session, onBack, onDelete, onDuplicate, onEdit }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   if (!session) return null;
   return (
     <div className="px-4 pt-1 space-y-4">
       <div className="flex items-center gap-2 -ml-1">
         <IconButton theme={theme} onClick={onBack}><ChevronLeft size={18} color={theme.text} /></IconButton>
-        <div>
-          <h1 style={{ color: theme.text }} className="text-[19px] font-extrabold">{session.programName}</h1>
+        <div className="flex-1 min-w-0">
+          <h1 style={{ color: theme.text }} className="text-[19px] font-extrabold truncate">{session.programName}</h1>
           <p style={{ color: theme.textMuted }} className="text-[12.5px] capitalize">{fmtDateFull(session.date)}</p>
         </div>
+        <IconButton theme={theme} onClick={() => onEdit(session.id)} aria-label="Modifier la séance"><Edit2 size={16} color={theme.text} /></IconButton>
       </div>
+      {session.notes && (
+        <Card theme={theme} className="p-3.5 flex items-start gap-2.5" style={{ background: `${theme.accent}0f` }}>
+          <Info size={14} color={theme.accent} className="mt-0.5 shrink-0" />
+          <p style={{ color: theme.text }} className="text-[13px] leading-snug">{session.notes}</p>
+        </Card>
+      )}
       <div className="grid grid-cols-3 gap-2.5">
         <Card theme={theme} className="p-3 text-center"><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{Math.round(session.tonnage).toLocaleString("fr-FR")}</p><p style={{ color: theme.textFaint }} className="text-[10px]">kg tonnage</p></Card>
         <Card theme={theme} className="p-3 text-center"><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{session.totalSets}</p><p style={{ color: theme.textFaint }} className="text-[10px]">séries</p></Card>
@@ -2683,6 +2723,166 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate }) {
       </div>
       <AnimatePresence>
         {confirmDelete && <ConfirmSheet theme={theme} danger title="Supprimer cette séance ?" subtitle="Cette action est irréversible." confirmLabel="Supprimer" onConfirm={() => onDelete(session.id)} onCancel={() => setConfirmDelete(false)} />}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/* ============================== EDIT PAST SESSION ============================== */
+// Modifier une séance déjà réalisée. Les modifications ne touchent QUE cette séance :
+// on travaille sur une copie locale (`draft`) et on ne remplace la séance d'origine dans
+// `sessions` qu'au clic sur "Enregistrer" — tant que ce n'est pas fait, rien n'est perdu ni
+// modifié ailleurs. Comme les records, la progression et les statistiques sont TOUJOURS
+// recalculés à la volée à partir du tableau `sessions` (computePRs, ProgressPage, StatsPage
+// ne font que le lire), il n'y a rien de spécial à faire pour les tenir à jour : remplacer
+// la séance dans `sessions` suffit, tout le reste de l'app se remet à jour tout seul.
+
+function EditableExerciseCard({ theme, exerciseIds, byId, groupLetter, onUpdateExercise, onUpdateSet, onAddSet, onRemoveSet }) {
+  const isGroup = exerciseIds.length > 1;
+  return (
+    <Card theme={theme} className="p-4" style={isGroup ? { border: `1.5px solid ${theme.accent}55` } : {}}>
+      {isGroup && (
+        <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold inline-block mb-3" style={{ background: theme.accent, color: "#fff" }}>
+          {groupLabel(exerciseIds.length)}
+        </span>
+      )}
+      <div className={isGroup ? "space-y-4" : ""}>
+        {exerciseIds.map((exId, exIdx) => {
+          const el = byId[exId];
+          if (!el) return null;
+          return (
+            <div key={exId} className={isGroup && exIdx > 0 ? "pt-4" : ""} style={isGroup && exIdx > 0 ? { borderTop: `1px dashed ${theme.border}` } : {}}>
+              <div className="flex items-center gap-2 mb-3">
+                {isGroup && <span className="text-[11px] font-extrabold shrink-0" style={{ color: theme.accent }}>{groupLetter}{exIdx + 1}</span>}
+                <input
+                  value={el.name} onChange={(e) => onUpdateExercise(exId, { name: e.target.value })}
+                  className="flex-1 font-bold text-[15px] bg-transparent outline-none min-w-0"
+                  style={{ color: theme.text }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <div className="grid items-center gap-2 px-1" style={{ gridTemplateColumns: "20px 1fr 1fr 26px" }}>
+                  <span /><span style={{ color: theme.textFaint }} className="text-[10px] font-semibold">POIDS (KG)</span>
+                  <span style={{ color: theme.textFaint }} className="text-[10px] font-semibold">REPS</span><span />
+                </div>
+                {el.sets.map((s, idx) => (
+                  <div key={idx} className="grid items-center gap-2" style={{ gridTemplateColumns: "20px 1fr 1fr 26px" }}>
+                    <span style={{ color: theme.textFaint }} className="text-[11.5px] font-bold text-center">{idx + 1}</span>
+                    <input
+                      inputMode="decimal" value={s.weight} onChange={(e) => onUpdateSet(exId, idx, { weight: e.target.value })}
+                      className="w-full min-w-0 rounded-xl px-2 py-2.5 text-[14px] font-semibold outline-none text-center"
+                      style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+                    />
+                    <input
+                      inputMode="numeric" value={s.reps} onChange={(e) => onUpdateSet(exId, idx, { reps: e.target.value })}
+                      className="w-full min-w-0 rounded-xl px-2 py-2.5 text-[14px] font-semibold outline-none text-center"
+                      style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+                    />
+                    <button onClick={() => onRemoveSet(exId, idx)} className="flex items-center justify-center active:scale-90 transition-transform" style={{ height: 38 }}>
+                      <X size={13} color={theme.textFaint} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => onAddSet(exId)} className="mt-2.5 text-[12px] font-semibold flex items-center gap-1" style={{ color: theme.accent }}>
+                <Plus size={12} /> Ajouter une série
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function EditSessionScreen({ theme, session, onCancel, onSave }) {
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(session)));
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(session), [draft, session]);
+
+  const blocks = draft.blocks && draft.blocks.length
+    ? draft.blocks
+    : draft.exerciseLogs.map((el) => ({ id: el.exerciseId, restSec: null, exerciseIds: [el.exerciseId] }));
+  const byId = Object.fromEntries(draft.exerciseLogs.map((el) => [el.exerciseId, el]));
+  const letters = computeGroupLetters(blocks.map((b) => ({ id: b.id, exercises: b.exerciseIds })));
+
+  const updateField = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const updateExercise = (exId, patch) => setDraft((d) => ({ ...d, exerciseLogs: d.exerciseLogs.map((el) => (el.exerciseId !== exId ? el : { ...el, ...patch })) }));
+  const updateSet = (exId, idx, patch) => setDraft((d) => ({
+    ...d, exerciseLogs: d.exerciseLogs.map((el) => (el.exerciseId !== exId ? el : { ...el, sets: el.sets.map((s, i) => (i === idx ? { ...s, ...patch } : s)) })),
+  }));
+  const addSet = (exId) => setDraft((d) => ({
+    ...d, exerciseLogs: d.exerciseLogs.map((el) => (el.exerciseId !== exId ? el : { ...el, sets: [...el.sets, { weight: "", reps: "", done: true }] })),
+  }));
+  const removeSet = (exId, idx) => setDraft((d) => ({
+    ...d, exerciseLogs: d.exerciseLogs.map((el) => (el.exerciseId !== exId ? el : { ...el, sets: el.sets.filter((_, i) => i !== idx) })),
+  }));
+  // Réordonner déplace des BLOCS entiers (un biset reste un seul bloc), exactement comme
+  // pendant une séance en direct — voir WorkoutSession / ReorderableBlockRow.
+  const reorderBlocks = (newBlocks) => setDraft((d) => ({ ...d, blocks: newBlocks }));
+
+  const handleCancelClick = () => { if (dirty) setConfirmDiscard(true); else onCancel(); };
+
+  // Le tonnage et le nombre de séries affichés partout ailleurs (historique, dashboard,
+  // stats) sont dérivés des séries elles-mêmes : on les recalcule ici pour que la séance
+  // modifiée reste cohérente avec ce qu'elle contient réellement.
+  const handleSave = () => {
+    const cleanedLogs = draft.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.weight !== "" || s.reps !== "") }));
+    const tonnage = cleanedLogs.reduce((a, el) => a + el.sets.reduce((b, s) => b + (Number(s.weight) || 0) * (Number(s.reps) || 0), 0), 0);
+    const totalSets = cleanedLogs.reduce((a, el) => a + el.sets.length, 0);
+    onSave({ ...draft, exerciseLogs: cleanedLogs, tonnage, totalSets });
+  };
+
+  return (
+    <div className="pb-8">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3">
+        <button onClick={handleCancelClick} className="text-[13px] font-semibold" style={{ color: theme.textMuted }}>Annuler</button>
+        <h1 style={{ color: theme.text }} className="text-[16px] font-extrabold">Modifier la séance</h1>
+        <button onClick={handleSave} className="text-[13px] font-bold" style={{ color: theme.accent }}>Enregistrer</button>
+      </div>
+
+      <div className="px-4 space-y-4">
+        <Card theme={theme} className="p-4 space-y-3">
+          <LabeledInput theme={theme} label="Nom de la séance" value={draft.programName} onChange={(v) => updateField({ programName: v })} />
+          <FieldRow theme={theme} label="Date">
+            <input type="date" value={draft.date} onChange={(e) => updateField({ date: e.target.value })} className="bg-transparent outline-none text-right" style={{ color: theme.text }} />
+          </FieldRow>
+        </Card>
+
+        <div>
+          <SectionTitle theme={theme}>Exercices · glisser pour réordonner</SectionTitle>
+          <Reorder.Group axis="y" values={blocks} onReorder={reorderBlocks} className="space-y-2.5">
+            {blocks.map((b) => (
+              <Reorder.Item key={b.id} value={b}>
+                <EditableExerciseCard
+                  theme={theme} exerciseIds={b.exerciseIds} byId={byId} groupLetter={letters[b.id]}
+                  onUpdateExercise={updateExercise} onUpdateSet={updateSet} onAddSet={addSet} onRemoveSet={removeSet}
+                />
+              </Reorder.Item>
+            ))}
+          </Reorder.Group>
+        </div>
+
+        <Card theme={theme} className="p-4">
+          <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2">Notes</p>
+          <textarea
+            value={draft.notes || ""} onChange={(e) => updateField({ notes: e.target.value })} rows={3}
+            placeholder="Notes personnelles sur cette séance..."
+            className="w-full rounded-xl p-3 text-[13px] outline-none resize-none"
+            style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+          />
+        </Card>
+
+        <BigButton theme={theme} gradient onClick={handleSave}><Save size={16} /> Enregistrer les modifications</BigButton>
+      </div>
+
+      <AnimatePresence>
+        {confirmDiscard && (
+          <ConfirmSheet
+            theme={theme} danger title="Abandonner les modifications ?" subtitle="Les changements non enregistrés seront perdus."
+            confirmLabel="Abandonner" onConfirm={onCancel} onCancel={() => setConfirmDiscard(false)}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
