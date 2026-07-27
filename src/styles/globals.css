@@ -1,0 +1,9 @@
+/* déplacé depuis l'ancienne racine src/index.css lors du refactoring */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  height: 100%; width: 100%; margin: 0; padding: 0;
+  position: fixed; inset: 0; overflow: hidden; overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%; touch-action: manipulation; background: #0a0a0b;
+}
+#root { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: none; }

@@ -11,6 +11,7 @@ import {
   Flame, Calendar, Info, ChevronDown, RotateCcw, CheckCircle2, Circle,
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
   Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User, Lock, Zap,
+  Utensils, Beef, Wheat, Droplet, Bell, AlertTriangle, Edit3,
 } from "lucide-react";
 
 /* ============================== STOCKAGE (localStorage) ============================== */
@@ -80,6 +81,25 @@ const fmtNum = (n) => {
   return Number.isInteger(num) ? String(num) : String(Math.round(num * 10) / 10);
 };
 
+// Convertit une saisie utilisateur en nombre, en acceptant le format français (virgule)
+// ET le format international (point) : "92,6" et "92.6" donnent tous les deux 92.6.
+// C'était la cause exacte du bug "NaN kg" : `Number("92,6")` (sans remplacement de la
+// virgule) renvoie NaN, car Number()/parseFloat() ne comprennent que le point décimal.
+function parseLocaleNumber(str) {
+  if (str == null) return NaN;
+  const normalized = String(str).trim().replace(",", ".");
+  if (normalized === "") return NaN;
+  return Number(normalized);
+}
+
+// Affichage d'un poids au format français : virgule décimale, une seule décimale
+// maximum, jamais de zéro inutile (92 -> "92", 92.6 -> "92,6", 85.25 -> "85,3").
+function fmtWeight(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "—";
+  return num.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+}
+
 const vibrate = (pattern) => {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) {}
 };
@@ -143,13 +163,13 @@ function computeGroupLetters(blocks) {
 }
 
 function normalizeProgram(p) {
-  if (p.blocks) return { ...p, absExercises: p.absExercises || [] };
+  if (p.blocks) return { ...p, absExercises: p.absExercises || [], muscleGroups: p.muscleGroups || [] };
   const blocks = (p.exercises || []).map((ex) => ({
     id: uid(),
     restSec: ex.rest || 90,
     exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes }],
   }));
-  return { id: p.id, name: p.name, color: p.color, blocks, absExercises: p.absExercises || [] };
+  return { id: p.id, name: p.name, color: p.color, blocks, absExercises: p.absExercises || [], muscleGroups: p.muscleGroups || [] };
 }
 
 /* ============================== THEME ============================== */
@@ -240,67 +260,67 @@ function usePersistentStateDebounced(key, initial, delayMs = 500) {
 
 /* ============================== DEFAULT DATA ============================== */
 
-const singleBlock = (name, series, reps, rest, notes = "") => ({
-  id: uid(), restSec: rest, exercises: [{ id: uid(), name, series, reps, notes }],
+const singleBlock = (name, series, reps, rest, notes = "", primaryMuscle = null, secondaryMuscles = []) => ({
+  id: uid(), restSec: rest, exercises: [{ id: uid(), name, series, reps, notes, primaryMuscle, secondaryMuscles }],
 });
 
 // Bloc abdos par défaut, ajouté à la fin de chaque programme d'exemple. `unit: "sec"`
 // signifie que la valeur saisie pendant la séance est une DURÉE (secondes), pas des reps —
 // utilisé ici pour le gainage.
 const defaultAbsExercises = () => ([
-  { id: uid(), name: "Crunch poulie", series: 4, reps: 15, unit: "reps", restSec: 45 },
-  { id: uid(), name: "Relevé de jambes", series: 3, reps: 12, unit: "reps", restSec: 45 },
-  { id: uid(), name: "Gainage", series: 3, reps: 60, unit: "sec", restSec: 45 },
+  { id: uid(), name: "Crunch poulie", series: 4, reps: 15, unit: "reps", restSec: 45, primaryMuscle: "abdominaux", secondaryMuscles: [] },
+  { id: uid(), name: "Relevé de jambes", series: 3, reps: 12, unit: "reps", restSec: 45, primaryMuscle: "abdominaux", secondaryMuscles: [] },
+  { id: uid(), name: "Gainage", series: 3, reps: 60, unit: "sec", restSec: 45, primaryMuscle: "abdominaux", secondaryMuscles: ["lombaires"] },
 ]);
 
 const DEFAULT_PROGRAMS = [
   {
-    id: uid(), name: "Pecs", color: "#FF5A36",
+    id: uid(), name: "Pecs", color: "#FF5A36", muscleGroups: ["pectoraux", "epaules", "triceps"],
     blocks: [
-      singleBlock("Développé couché barre", 4, 8, 120),
+      singleBlock("Développé couché barre", 4, 8, 120, "", "pectoraux", ["triceps", "epaules"]),
       {
         id: uid(), restSec: 90,
         exercises: [
-          { id: uid(), name: "Développé incliné haltères", series: 3, reps: 10, notes: "" },
-          { id: uid(), name: "Écarté poulie vis-à-vis", series: 3, reps: 12, notes: "" },
+          { id: uid(), name: "Développé incliné haltères", series: 3, reps: 10, notes: "", primaryMuscle: "pectoraux", secondaryMuscles: ["epaules"] },
+          { id: uid(), name: "Écarté poulie vis-à-vis", series: 3, reps: 12, notes: "", primaryMuscle: "pectoraux", secondaryMuscles: [] },
         ],
       },
-      singleBlock("Dips lestés", 3, 10, 90),
+      singleBlock("Dips lestés", 3, 10, 90, "", "pectoraux", ["triceps"]),
     ],
     absExercises: defaultAbsExercises(),
   },
   {
-    id: uid(), name: "Épaules / Bras", color: "#FF9F1C",
+    id: uid(), name: "Épaules / Bras", color: "#FF9F1C", muscleGroups: ["epaules", "biceps", "triceps"],
     blocks: [
-      singleBlock("Développé militaire", 4, 8, 120),
-      singleBlock("Élévations latérales", 4, 12, 60),
+      singleBlock("Développé militaire", 4, 8, 120, "", "epaules", ["triceps"]),
+      singleBlock("Élévations latérales", 4, 12, 60, "", "epaules", []),
       {
         id: uid(), restSec: 75,
         exercises: [
-          { id: uid(), name: "Curl barre EZ", series: 3, reps: 10, notes: "" },
-          { id: uid(), name: "Extension triceps poulie", series: 3, reps: 12, notes: "" },
+          { id: uid(), name: "Curl barre EZ", series: 3, reps: 10, notes: "", primaryMuscle: "biceps", secondaryMuscles: ["avant_bras"] },
+          { id: uid(), name: "Extension triceps poulie", series: 3, reps: 12, notes: "", primaryMuscle: "triceps", secondaryMuscles: [] },
         ],
       },
     ],
     absExercises: defaultAbsExercises(),
   },
   {
-    id: uid(), name: "Dos", color: "#30D5A6",
+    id: uid(), name: "Dos", color: "#30D5A6", muscleGroups: ["dos", "biceps"],
     blocks: [
-      singleBlock("Tractions lestées", 4, 8, 120),
-      singleBlock("Rowing barre", 4, 8, 100),
-      singleBlock("Tirage horizontal poulie", 3, 12, 75),
-      singleBlock("Soulevé de terre", 3, 6, 150),
+      singleBlock("Tractions lestées", 4, 8, 120, "", "dos", ["biceps", "avant_bras"]),
+      singleBlock("Rowing barre", 4, 8, 100, "", "dos", ["biceps"]),
+      singleBlock("Tirage horizontal poulie", 3, 12, 75, "", "dos", []),
+      singleBlock("Soulevé de terre", 3, 6, 150, "", "dos", ["ischios", "fessiers", "lombaires"]),
     ],
     absExercises: defaultAbsExercises(),
   },
   {
-    id: uid(), name: "Jambes", color: "#5E5CE6",
+    id: uid(), name: "Jambes", color: "#5E5CE6", muscleGroups: ["quadriceps", "ischios", "fessiers", "mollets"],
     blocks: [
-      singleBlock("Squat barre", 4, 8, 150),
-      singleBlock("Presse à cuisses", 4, 10, 100),
-      singleBlock("Leg curl", 3, 12, 60),
-      singleBlock("Mollets debout", 4, 15, 45),
+      singleBlock("Squat barre", 4, 8, 150, "", "quadriceps", ["fessiers"]),
+      singleBlock("Presse à cuisses", 4, 10, 100, "", "quadriceps", ["fessiers"]),
+      singleBlock("Leg curl", 3, 12, 60, "", "ischios", []),
+      singleBlock("Mollets debout", 4, 15, 45, "", "mollets", []),
     ],
     absExercises: [],
   },
@@ -459,6 +479,160 @@ function AppLogoMark({ size = 40 }) {
   );
 }
 
+/* ============================================================================
+   GROUPES MUSCULAIRES — illustrations SVG minimalistes réutilisables
+   ============================================================================
+   Choix de design assumé : UN SEUL pictogramme humain, géométrique et épuré
+   (formes arrondies simples, pas d'anatomie détaillée), réutilisé pour tous les
+   groupes musculaires — seule la zone mise en évidence (remplissage clair très
+   discret) change d'un groupe à l'autre. Ça garantit une cohérence visuelle
+   parfaite entre toutes les cartes, contrairement à 13 dessins différents.
+*/
+
+const MUSCLE_GROUPS = [
+  { id: "pectoraux", label: "Pectoraux" },
+  { id: "dos", label: "Dos" },
+  { id: "epaules", label: "Épaules" },
+  { id: "biceps", label: "Biceps" },
+  { id: "triceps", label: "Triceps" },
+  { id: "avant_bras", label: "Avant-bras" },
+  { id: "quadriceps", label: "Quadriceps" },
+  { id: "ischios", label: "Ischio-jambiers" },
+  { id: "fessiers", label: "Fessiers" },
+  { id: "mollets", label: "Mollets" },
+  { id: "abdominaux", label: "Abdominaux" },
+  { id: "lombaires", label: "Lombaires" },
+  { id: "full_body", label: "Corps complet" },
+];
+const muscleLabel = (id) => MUSCLE_GROUPS.find((m) => m.id === id)?.label || id;
+
+// Le pictogramme de base : tête, tronc, deux bras, deux jambes — uniquement des
+// formes simples (cercle + rectangles arrondis), contour fin, aucun remplissage.
+function BodySilhouette({ stroke, children }) {
+  return (
+    <>
+      <circle cx="60" cy="18" r="14" fill="none" stroke={stroke} strokeWidth="2" />
+      <rect x="54" y="30" width="12" height="10" rx="3" fill="none" stroke={stroke} strokeWidth="2" />
+      <rect x="35" y="40" width="50" height="68" rx="20" fill="none" stroke={stroke} strokeWidth="2" />
+      <rect x="10" y="44" width="15" height="64" rx="7.5" fill="none" stroke={stroke} strokeWidth="2" transform="rotate(10 17.5 44)" />
+      <rect x="95" y="44" width="15" height="64" rx="7.5" fill="none" stroke={stroke} strokeWidth="2" transform="rotate(-10 102.5 44)" />
+      <rect x="40" y="106" width="17" height="92" rx="8.5" fill="none" stroke={stroke} strokeWidth="2" />
+      <rect x="63" y="106" width="17" height="92" rx="8.5" fill="none" stroke={stroke} strokeWidth="2" />
+      {children}
+    </>
+  );
+}
+
+// Zone à surligner pour chaque groupe musculaire, positionnée sur le pictogramme
+// ci-dessus. Simplification assumée : un seul pictogramme "de face" sert de support
+// à tous les groupes (y compris ceux normalement vus de dos, comme le Dos ou les
+// Fessiers) — le but est un repère visuel rapide et cohérent, pas une planche
+// anatomique. Facilement remplaçable par des tracés plus élaborés plus tard.
+const MUSCLE_HIGHLIGHTS = {
+  pectoraux: (c) => (<>
+    <ellipse cx="48" cy="54" rx="11" ry="9" fill={c} opacity="0.35" />
+    <ellipse cx="72" cy="54" rx="11" ry="9" fill={c} opacity="0.35" />
+  </>),
+  epaules: (c) => (<>
+    <circle cx="30" cy="46" r="9" fill={c} opacity="0.35" />
+    <circle cx="90" cy="46" r="9" fill={c} opacity="0.35" />
+  </>),
+  biceps: (c) => (<>
+    <ellipse cx="17" cy="62" rx="6.5" ry="12" fill={c} opacity="0.35" transform="rotate(10 17 62)" />
+    <ellipse cx="103" cy="62" rx="6.5" ry="12" fill={c} opacity="0.35" transform="rotate(-10 103 62)" />
+  </>),
+  triceps: (c) => (<>
+    <ellipse cx="14" cy="82" rx="6" ry="13" fill={c} opacity="0.3" transform="rotate(10 14 82)" />
+    <ellipse cx="106" cy="82" rx="6" ry="13" fill={c} opacity="0.3" transform="rotate(-10 106 82)" />
+  </>),
+  avant_bras: (c) => (<>
+    <ellipse cx="21" cy="100" rx="6" ry="10" fill={c} opacity="0.35" transform="rotate(10 21 100)" />
+    <ellipse cx="99" cy="100" rx="6" ry="10" fill={c} opacity="0.35" transform="rotate(-10 99 100)" />
+  </>),
+  abdominaux: (c) => (<>
+    <rect x="46" y="70" width="28" height="34" rx="6" fill={c} opacity="0.3" />
+    <line x1="60" y1="70" x2="60" y2="104" stroke={c} strokeWidth="1" opacity="0.6" />
+    <line x1="46" y1="80" x2="74" y2="80" stroke={c} strokeWidth="1" opacity="0.5" />
+    <line x1="46" y1="91" x2="74" y2="91" stroke={c} strokeWidth="1" opacity="0.5" />
+  </>),
+  dos: (c) => (<>
+    <rect x="38" y="42" width="44" height="62" rx="18" fill={c} opacity="0.28" />
+    <line x1="60" y1="46" x2="60" y2="100" stroke={c} strokeWidth="1" opacity="0.5" />
+  </>),
+  lombaires: (c) => (<rect x="46" y="96" width="28" height="14" rx="5" fill={c} opacity="0.35" />),
+  quadriceps: (c) => (<>
+    <rect x="42" y="110" width="13" height="42" rx="6" fill={c} opacity="0.32" />
+    <rect x="65" y="110" width="13" height="42" rx="6" fill={c} opacity="0.32" />
+  </>),
+  ischios: (c) => (<>
+    <rect x="42" y="140" width="13" height="38" rx="6" fill={c} opacity="0.3" />
+    <rect x="65" y="140" width="13" height="38" rx="6" fill={c} opacity="0.3" />
+  </>),
+  fessiers: (c) => (<ellipse cx="60" cy="108" rx="20" ry="10" fill={c} opacity="0.32" />),
+  mollets: (c) => (<>
+    <ellipse cx="48.5" cy="175" rx="7" ry="16" fill={c} opacity="0.32" />
+    <ellipse cx="71.5" cy="175" rx="7" ry="16" fill={c} opacity="0.32" />
+  </>),
+  full_body: (c) => (<rect x="8" y="4" width="104" height="200" rx="30" fill={c} opacity="0.12" />),
+};
+
+// Illustration réutilisable : un ou plusieurs groupes musculaires surlignés sur le
+// même pictogramme de base. `muscles` accepte un id unique ou un tableau.
+function MuscleIllustration({ theme, muscles, size = 56 }) {
+  const list = (Array.isArray(muscles) ? muscles : [muscles]).filter(Boolean);
+  return (
+    <svg width={size} height={size} viewBox="0 0 120 220" preserveAspectRatio="xMidYMid meet">
+      <BodySilhouette stroke={theme.textFaint}>
+        {list.map((m) => {
+          const fn = MUSCLE_HIGHLIGHTS[m];
+          return fn ? <g key={m}>{fn(theme.text)}</g> : null;
+        })}
+      </BodySilhouette>
+    </svg>
+  );
+}
+
+// Grille de sélection multiple des groupes musculaires (création/édition de programme).
+function MuscleGroupPicker({ theme, selected, onToggle }) {
+  return (
+    <div className="grid grid-cols-3 gap-2.5">
+      {MUSCLE_GROUPS.filter((m) => m.id !== "full_body").map((m) => {
+        const active = selected.includes(m.id);
+        return (
+          <button
+            key={m.id} onClick={() => onToggle(m.id)}
+            className="rounded-2xl p-2.5 flex flex-col items-center gap-1.5 active:scale-95 transition-transform relative"
+            style={{ background: active ? `${theme.accent}14` : theme.card2, border: `1.5px solid ${active ? theme.accent : theme.border}` }}
+          >
+            {active && (
+              <div className="absolute top-1.5 right-1.5 rounded-full flex items-center justify-center" style={{ width: 16, height: 16, background: theme.accent }}>
+                <Check size={10} color="#fff" strokeWidth={3} />
+              </div>
+            )}
+            <MuscleIllustration theme={theme} muscles={m.id} size={44} />
+            <span style={{ color: active ? theme.text : theme.textMuted }} className="text-[11px] font-semibold text-center leading-tight">{m.label}</span>
+          </button>
+        );
+      })}
+      <button
+        onClick={() => onToggle("full_body")}
+        className="rounded-2xl p-2.5 flex flex-col items-center gap-1.5 active:scale-95 transition-transform relative col-span-3"
+        style={{ background: selected.includes("full_body") ? `${theme.accent}14` : theme.card2, border: `1.5px solid ${selected.includes("full_body") ? theme.accent : theme.border}` }}
+      >
+        {selected.includes("full_body") && (
+          <div className="absolute top-1.5 right-1.5 rounded-full flex items-center justify-center" style={{ width: 16, height: 16, background: theme.accent }}>
+            <Check size={10} color="#fff" strokeWidth={3} />
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <MuscleIllustration theme={theme} muscles="full_body" size={32} />
+          <span style={{ color: selected.includes("full_body") ? theme.text : theme.textMuted }} className="text-[12px] font-semibold">Corps complet</span>
+        </div>
+      </button>
+    </div>
+  );
+}
+
 /* ============================== APP ROOT ============================== */
 
 export default function App() {
@@ -478,6 +652,23 @@ export default function App() {
     name: "", age: null, height: null, goal: "", level: "",
   });
 
+  // Objectifs nutritionnels — nouvelle fonctionnalité, entièrement dans Profil (pas de
+  // nouvel onglet). Le poids courant N'EST PAS dupliqué ici : il est relu depuis
+  // `weightEntries` (déjà la source unique de vérité pour le poids, voir les corrections
+  // précédentes sur les doublons Profil/Poids).
+  const [nutritionProfile, setNutritionProfile, nutritionProfileLoaded] = usePersistentState("gt_nutrition_profile_v1", {
+    sex: "M", birthdate: null, height: null, weightTarget: null,
+    activityLevel: "sedentary", stepsPerDay: null, profession: "",
+    strengthSessionsPerWeek: 3, strengthSessionDuration: 60,
+    cardioSessionsPerWeek: 0, cardioSessionDuration: 30,
+    goal: "maintain",
+  });
+  // Saisie manuelle des calories consommées dans la journée (pas de journal alimentaire
+  // complet — cette app ne suit pas d'aliments individuels, juste un total quotidien).
+  const [caloriesLog, setCaloriesLog, caloriesLogLoaded] = usePersistentState("gt_calories_log_v1", []);
+  // Historique des cibles caloriques calculées + des ajustements hebdomadaires appliqués.
+  const [nutritionAdjustments, setNutritionAdjustments, adjustmentsLoaded] = usePersistentState("gt_nutrition_adjustments_v1", []);
+
   // Navigation : seulement 4 onglets. Le sous-détail (programme ouvert, séance ouverte...)
   // vit désormais localement DANS chaque écran concerné (ex: ProfileHub), plus au niveau App.
   const [tab, setTab] = useState("dashboard"); // 'dashboard' | 'workout' | 'progress' | 'profile'
@@ -496,7 +687,8 @@ export default function App() {
   // source de vérité (qui reste dans WorkoutSession/activeWorkout).
   const [sessionStatus, setSessionStatus] = useState(null);
 
-  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded && activeWorkoutLoaded;
+  const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded
+    && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded;
 
   // Sécurité : force une sauvegarde immédiate de la séance active juste avant que
   // l'utilisateur ne quitte/ferme/rafraîchisse la page, plutôt que d'attendre le debounce.
@@ -515,9 +707,21 @@ export default function App() {
 
   useEffect(() => {
     if (!programsLoaded) return;
-    setPrograms((ps) => (ps.some((p) => !p.blocks || !p.absExercises) ? ps.map(normalizeProgram) : ps));
+    setPrograms((ps) => (ps.some((p) => !p.blocks || !p.absExercises || !p.muscleGroups) ? ps.map(normalizeProgram) : ps));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [programsLoaded]);
+
+  // Corrige les anciennes entrées de poids invalides éventuellement déjà enregistrées
+  // (poids null/NaN à cause du bug de virgule décimale) : on ne peut pas retrouver la
+  // valeur d'origine tapée par l'utilisateur, donc on retire ces entrées cassées plutôt
+  // que d'afficher "NaN kg" partout (poids actuel, historique, graphique, statistiques).
+  useEffect(() => {
+    if (!weightLoaded) return;
+    setWeightEntries((entries) => {
+      const cleaned = entries.filter((e) => Number.isFinite(e.weight) && e.weight > 0);
+      return cleaned.length === entries.length ? entries : cleaned;
+    });
+  }, [weightLoaded]);
 
   // Démarre une séance ET bascule vers l'onglet "Séance en cours" pour la voir tout de suite.
   const startWorkout = (program) => { setActiveWorkout(makeWorkout(program)); setTab("workout"); };
@@ -539,7 +743,7 @@ export default function App() {
   if (!dataLoaded) {
     return (
       <div style={{ background: theme.bg }} className="flex flex-col items-center justify-center gap-5 gt-app-shell">
-        <style>{`.gt-app-shell { height: 100vh; height: 100dvh; }`}</style>
+        <style>{`.gt-app-shell { height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior: none; }`}</style>
         <motion.div animate={{ scale: [1, 1.06, 1] }} transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}>
           <AppLogoMark size={52} />
         </motion.div>
@@ -560,8 +764,20 @@ export default function App() {
     >
       {/* `height: 100dvh` (avec repli 100vh) ancre l'app à la vraie hauteur d'écran, voir
           l'historique de cette conversation pour le détail du bug que ça corrige. */}
-      <style>{`.gt-app-shell { height: 100vh; height: 100dvh; }`}</style>
-      <div className="flex-1 overflow-y-auto pb-28" style={{ WebkitOverflowScrolling: "touch" }}>
+      <style>{`.gt-app-shell { height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior: none; }`}</style>
+      {/* overscrollBehavior: "contain" empêche le "scroll chaining" — arriver en haut/bas de
+          CE conteneur ne fait plus rebondir la page entière derrière lui (le bounce Safari).
+          touchAction: "pan-y" autorise le scroll vertical normal mais bloque le pincement
+          pour zoomer À L'INTÉRIEUR de l'app (en plus du <meta viewport> dans index.html). */}
+      <div
+        className="flex-1 overflow-y-auto"
+        style={{
+          WebkitOverflowScrolling: "touch",
+          paddingBottom: "calc(112px + env(safe-area-inset-bottom))",
+          overscrollBehavior: "contain",
+          touchAction: "pan-y",
+        }}
+      >
         {/* La séance en cours reste TOUJOURS montée tant qu'elle existe (jamais démontée en
             changeant d'onglet) : seule sa visibilité CSS change. Ses timers (chrono de
             séance, minuteur de repos) continuent donc de tourner normalement même quand
@@ -600,6 +816,9 @@ export default function App() {
                   weightEntries={weightEntries} setWeightEntries={setWeightEntries}
                   settings={settings} setSettings={setSettings}
                   userProfile={userProfile} setUserProfile={setUserProfile} onResetData={resetData}
+                  nutritionProfile={nutritionProfile} setNutritionProfile={setNutritionProfile}
+                  caloriesLog={caloriesLog} setCaloriesLog={setCaloriesLog}
+                  nutritionAdjustments={nutritionAdjustments} setNutritionAdjustments={setNutritionAdjustments}
                   onStartProgram={startWorkout}
                   onExport={() => exportBackup(programs, sessions, weightEntries, settings)}
                   onImport={(data) => {
@@ -658,6 +877,8 @@ function makeWorkout(program) {
       targetReps: ex.reps,
       targetUnit: ex.unit || "reps",
       notes: ex.notes,
+      primaryMuscle: ex.primaryMuscle || null,
+      secondaryMuscles: ex.secondaryMuscles || [],
       sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
     })),
   }));
@@ -670,6 +891,7 @@ function makeWorkout(program) {
     isAbsBlock: true,
     exerciseLogs: [{
       exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: ex.unit || "reps", notes: ex.notes || "",
+      primaryMuscle: ex.primaryMuscle || "abdominaux", secondaryMuscles: ex.secondaryMuscles || [],
       sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
     }],
   }));
@@ -750,8 +972,8 @@ function BottomNav({ theme, tab, setTab, activeWorkout }) {
     <div className="fixed bottom-0 left-0 right-0 flex justify-center pointer-events-none z-50">
       <div className="w-full pointer-events-auto" style={{ maxWidth: 480 }}>
         <div
-          className="mx-3 mb-3 rounded-3xl flex items-stretch justify-between px-1 py-1.5 backdrop-blur-xl"
-          style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.3)" }}
+          className="mx-3 rounded-3xl flex items-stretch justify-between px-1 py-1.5 backdrop-blur-xl"
+          style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.3)", marginBottom: "calc(12px + env(safe-area-inset-bottom))" }}
         >
           {items.map((it) => {
             const selected = tab === it.id;
@@ -789,7 +1011,7 @@ function ActiveSessionBanner({ theme, status, onTap }) {
       initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }}
       transition={{ type: "spring", damping: 26, stiffness: 300 }}
       className="fixed left-0 right-0 z-40 flex justify-center px-3 pointer-events-auto"
-      style={{ maxWidth: 480, margin: "0 auto", bottom: 92 }}
+      style={{ maxWidth: 480, margin: "0 auto", bottom: "calc(92px + env(safe-area-inset-bottom))" }}
     >
       <div
         className="w-full flex items-center gap-3 rounded-2xl px-4 py-3 active:scale-[0.98] transition-transform"
@@ -851,6 +1073,7 @@ function SubPageHeader({ theme, title, onBack }) {
 // avoir les deux était le doublon signalé (voir l'explication dans la conversation).
 const PROFILE_MENU_ITEMS = [
   { id: "weight", view: "weight", icon: Scale, label: "Poids", desc: "Poids actuel, évolution, ajout, historique" },
+  { id: "nutrition", view: "nutrition", icon: Utensils, label: "Objectifs nutritionnels", desc: "Calories, macros, coach adaptatif" },
   { id: "progress", view: "progress", icon: TrendingUp, label: "Progression", desc: "Graphiques, charges, évolution des performances" },
   { id: "history", view: "history", icon: HistoryIcon, label: "Historique séances", desc: "Revoir toutes tes séances passées" },
   { id: "records", view: "records", icon: Trophy, label: "Records", desc: "Tes meilleures charges par exercice" },
@@ -951,7 +1174,7 @@ function MyProfileView({ theme, userProfile, setUserProfile, sessions, weightEnt
       <div className="grid grid-cols-2 gap-2.5">
         <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Séances (30j)</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{last30}</p></Card>
         <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Tonnage total</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{Math.round(totalTonnage / 1000)}t</p></Card>
-        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{lastWeight ? `${lastWeight.weight}kg` : "—"}</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{lastWeight ? `${fmtWeight(lastWeight.weight)}kg` : "—"}</p></Card>
         <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Programmes</p><p style={{ color: theme.text }} className="text-[19px] font-extrabold">{programs.length}</p></Card>
       </div>
 
@@ -1032,6 +1255,7 @@ function ProfileHub({
   theme, isDark, setIsDark, programs, setPrograms, sessions, setSessions,
   weightEntries, setWeightEntries, settings, setSettings, onStartProgram, onExport, onImport,
   userProfile, setUserProfile, onResetData,
+  nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments,
 }) {
   const [view, setView] = useState(null); // null = menu racine
   const [programId, setProgramId] = useState(null);
@@ -1140,6 +1364,20 @@ function ProfileHub({
     );
   }
 
+  if (view === "nutrition") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Objectifs nutritionnels" onBack={() => setView(null)} />
+        <NutritionScreen
+          theme={theme} weightEntries={weightEntries} sessions={sessions}
+          nutritionProfile={nutritionProfile} setNutritionProfile={setNutritionProfile}
+          caloriesLog={caloriesLog} setCaloriesLog={setCaloriesLog}
+          nutritionAdjustments={nutritionAdjustments} setNutritionAdjustments={setNutritionAdjustments}
+        />
+      </div>
+    );
+  }
+
   if (view === "stats") {
     return (
       <div>
@@ -1210,7 +1448,463 @@ function RecordsPage({ theme, sessions }) {
   );
 }
 
+const ACTIVITY_LEVELS = [
+  { id: "sedentary", label: "Sédentaire" },
+  { id: "light", label: "Léger" },
+  { id: "moderate", label: "Modéré" },
+  { id: "high", label: "Élevé" },
+  { id: "very_high", label: "Très élevé" },
+];
+const NUTRITION_GOALS = [
+  { id: "cut", label: "Sèche" },
+  { id: "maintain", label: "Maintien" },
+  { id: "bulk", label: "Prise de masse" },
+];
+
+// --- Formulaire "Informations" du coach nutritionnel : toujours modifiable -------------
+function NutritionInfoForm({ theme, profile, onUpdate, currentWeight, onDone, canClose }) {
+  return (
+    <div className="space-y-3">
+      <Card theme={theme} className="p-4 space-y-3">
+        <p style={{ color: theme.text }} className="font-bold text-[14px]">Informations personnelles</p>
+        <FieldRow theme={theme} label="Sexe">
+          <div className="flex gap-2">
+            <Pill theme={theme} active={profile.sex === "M"} onClick={() => onUpdate({ sex: "M" })}>Homme</Pill>
+            <Pill theme={theme} active={profile.sex === "F"} onClick={() => onUpdate({ sex: "F" })}>Femme</Pill>
+          </div>
+        </FieldRow>
+        <FieldRow theme={theme} label="Date de naissance">
+          <input type="date" value={profile.birthdate || ""} onChange={(e) => onUpdate({ birthdate: e.target.value })} className="bg-transparent outline-none text-right" style={{ color: theme.text }} />
+        </FieldRow>
+        <LabeledInput theme={theme} label="Taille (cm)" value={profile.height ?? ""} onChange={(v) => { const n = parseLocaleNumber(v); onUpdate({ height: v.trim() === "" ? null : (Number.isFinite(n) ? n : profile.height) }); }} placeholder="Ex : 178" />
+        <FieldRow theme={theme} label="Poids actuel">
+          <span style={{ color: theme.textMuted }} className="text-[13px]">{currentWeight ? `${fmtWeight(currentWeight)} kg (via Poids)` : "Non renseigné"}</span>
+        </FieldRow>
+        <LabeledInput theme={theme} label="Poids cible (kg)" value={profile.weightTarget ?? ""} onChange={(v) => { const n = parseLocaleNumber(v); onUpdate({ weightTarget: v.trim() === "" ? null : (Number.isFinite(n) ? n : profile.weightTarget) }); }} placeholder="Ex : 75" />
+      </Card>
+
+      <Card theme={theme} className="p-4 space-y-3">
+        <p style={{ color: theme.text }} className="font-bold text-[14px]">Activité quotidienne</p>
+        <div className="flex flex-wrap gap-2">
+          {ACTIVITY_LEVELS.map((a) => <Pill key={a.id} theme={theme} active={profile.activityLevel === a.id} onClick={() => onUpdate({ activityLevel: a.id })}>{a.label}</Pill>)}
+        </div>
+        <LabeledInput theme={theme} label="Pas / jour (optionnel)" value={profile.stepsPerDay ?? ""} onChange={(v) => onUpdate({ stepsPerDay: v.trim() === "" ? null : Number(v.replace(/\D/g, "")) || null })} placeholder="Ex : 8000" />
+        <LabeledInput theme={theme} label="Profession (optionnel)" value={profile.profession} onChange={(v) => onUpdate({ profession: v })} placeholder="Ex : bureau, chantier..." />
+      </Card>
+
+      <Card theme={theme} className="p-4 space-y-3">
+        <p style={{ color: theme.text }} className="font-bold text-[14px]">Entraînement</p>
+        <div className="grid grid-cols-2 gap-2.5">
+          <MiniStepper theme={theme} label="Muscu / sem" value={profile.strengthSessionsPerWeek} onChange={(v) => onUpdate({ strengthSessionsPerWeek: v })} />
+          <MiniStepper theme={theme} label="Durée muscu" value={profile.strengthSessionDuration} step={5} suffix="min" onChange={(v) => onUpdate({ strengthSessionDuration: v })} />
+          <MiniStepper theme={theme} label="Cardio / sem" value={profile.cardioSessionsPerWeek} onChange={(v) => onUpdate({ cardioSessionsPerWeek: v })} />
+          <MiniStepper theme={theme} label="Durée cardio" value={profile.cardioSessionDuration} step={5} suffix="min" onChange={(v) => onUpdate({ cardioSessionDuration: v })} />
+        </div>
+      </Card>
+
+      <Card theme={theme} className="p-4">
+        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2.5">Objectif</p>
+        <div className="flex flex-wrap gap-2">
+          {NUTRITION_GOALS.map((g) => <Pill key={g.id} theme={theme} active={profile.goal === g.id} onClick={() => onUpdate({ goal: g.id })}>{g.label}</Pill>)}
+        </div>
+      </Card>
+
+      {canClose && <BigButton theme={theme} gradient onClick={onDone}><Check size={16} /> Voir le tableau de bord</BigButton>}
+    </div>
+  );
+}
+
+function NutritionNotificationBanner({ theme, notif }) {
+  const isWarning = notif.type === "warning";
+  const isSuccess = notif.type === "success";
+  const color = isSuccess ? theme.good : isWarning ? theme.accent2 : theme.accent;
+  return (
+    <div className="rounded-2xl p-3.5 flex items-start gap-2.5" style={{ background: `${color}14`, border: `1px solid ${color}33` }}>
+      {isSuccess ? <Trophy size={15} color={color} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} color={color} className="mt-0.5 shrink-0" />}
+      <p style={{ color: theme.text }} className="text-[13px] leading-snug">{notif.message}</p>
+    </div>
+  );
+}
+
+// --- Coach nutritionnel : écran principal -----------------------------------------------
+// Architecture : tout le calcul (BMR/TDEE/calories/macros/analyse hebdomadaire) vit dans
+// les "services" définis plus haut (EnergyCalculator, WorkoutCalorieEstimator, GoalManager,
+// NutritionCalculator, WeeklyAdaptiveAlgorithm) — ce composant ne fait que les appeler et
+// afficher le résultat, il ne contient aucune formule lui-même.
+function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments }) {
+  const sortedWeights = useMemo(() => [...weightEntries].sort((a, b) => a.date.localeCompare(b.date)), [weightEntries]);
+  const currentWeight = sortedWeights.length ? sortedWeights[sortedWeights.length - 1].weight : null;
+  const daysSinceLastWeight = sortedWeights.length
+    ? Math.floor((Date.now() - new Date(sortedWeights[sortedWeights.length - 1].date).getTime()) / 86400000)
+    : null;
+
+  const update = (patch) => setNutritionProfile((p) => ({ ...p, ...patch }));
+  const missingEssentials = !nutritionProfile.birthdate || !nutritionProfile.height || !currentWeight;
+  const [editingInfo, setEditingInfo] = useState(missingEssentials);
+
+  const age = EnergyCalculator.computeAge(nutritionProfile.birthdate);
+  const bmr = EnergyCalculator.computeBMR({ sex: nutritionProfile.sex, weightKg: currentWeight, heightCm: nutritionProfile.height, age });
+
+  const last7Sessions = useMemo(() => sessions.filter((s) => Date.now() - s.startedAt < 7 * 86400000), [sessions]);
+  const avgStrengthKcal7d = useMemo(() => {
+    if (!currentWeight || !last7Sessions.length) return 0;
+    const total = last7Sessions.reduce((a, s) => a + WorkoutCalorieEstimator.estimateStrengthSessionKcal({ tonnage: s.tonnage, durationSec: s.durationSec, bodyWeightKg: currentWeight }), 0);
+    return total / 7;
+  }, [last7Sessions, currentWeight]);
+  const avgCardioKcal = WorkoutCalorieEstimator.estimateAvgDailyCardioKcal({
+    cardioSessionsPerWeek: nutritionProfile.cardioSessionsPerWeek, cardioDurationMin: nutritionProfile.cardioSessionDuration, bodyWeightKg: currentWeight,
+  });
+
+  const tdee = EnergyCalculator.computeTDEE({ bmr, activityLevel: nutritionProfile.activityLevel, avgDailyWorkoutKcal: avgStrengthKcal7d + avgCardioKcal });
+
+  const totalAdjustmentKcal = useMemo(() => nutritionAdjustments.filter((a) => a.reason === "weekly_adjustment").reduce((a, x) => a + x.delta, 0), [nutritionAdjustments]);
+  const calorieTarget = tdee ? GoalManager.computeCalorieTarget({ tdee, goal: nutritionProfile.goal, adjustmentKcal: totalAdjustmentKcal }) : null;
+  const macros = calorieTarget && currentWeight ? NutritionCalculator.computeMacros({ calories: calorieTarget, weightKg: currentWeight, goal: nutritionProfile.goal }) : null;
+
+  const todayStr = todayISO();
+  const todaySession = sessions.find((s) => s.date === todayStr);
+  const todayStrengthKcal = todaySession ? WorkoutCalorieEstimator.estimateStrengthSessionKcal({ tonnage: todaySession.tonnage, durationSec: todaySession.durationSec, bodyWeightKg: currentWeight }) : 0;
+  const todayTotalBurn = Math.round((bmr || 0) + todayStrengthKcal + avgCardioKcal);
+
+  const todayCalorieEntry = caloriesLog.find((c) => c.date === todayStr);
+  const [calInput, setCalInput] = useState(todayCalorieEntry ? String(todayCalorieEntry.calories) : "");
+  useEffect(() => { setCalInput(todayCalorieEntry ? String(todayCalorieEntry.calories) : ""); }, [todayCalorieEntry?.calories]);
+  const saveCalories = () => {
+    const parsed = parseLocaleNumber(calInput);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    setCaloriesLog((log) => (log.some((c) => c.date === todayStr) ? log.map((c) => (c.date === todayStr ? { ...c, calories: parsed } : c)) : [...log, { date: todayStr, calories: parsed }]));
+  };
+
+  // Un instantané par jour maximum (pas à chaque rendu) : sert de base à l'historique/graphique.
+  useEffect(() => {
+    if (!calorieTarget) return;
+    setNutritionAdjustments((list) => (
+      list.some((a) => a.date === todayStr && a.reason === "auto")
+        ? list
+        : [...list, { date: todayStr, calorieTarget, bmr, tdee, delta: 0, reason: "auto" }]
+    ));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calorieTarget, bmr, tdee]);
+
+  const weeklyAnalysis = useMemo(() => WeeklyAdaptiveAlgorithm.analyze({ weightEntries: sortedWeights, goal: nutritionProfile.goal }), [sortedWeights, nutritionProfile.goal]);
+  const applySuggestion = () => {
+    if (!weeklyAnalysis.suggestionKcal) return;
+    setNutritionAdjustments((list) => [...list, { date: todayStr, delta: weeklyAnalysis.suggestionKcal, reason: "weekly_adjustment", calorieTarget: (calorieTarget || 0) + weeklyAnalysis.suggestionKcal }]);
+  };
+
+  const notifications = useMemo(() => {
+    const list = [];
+    if (daysSinceLastWeight != null && daysSinceLastWeight >= 4) list.push({ type: "warning", message: `Tu n'as pas noté ton poids depuis ${daysSinceLastWeight} jours — pense à te peser pour garder des calculs fiables.` });
+    if (nutritionProfile.weightTarget && currentWeight && Math.abs(currentWeight - nutritionProfile.weightTarget) <= 0.3) list.push({ type: "success", message: "Objectif de poids atteint !" });
+    if (tdee && calorieTarget && calorieTarget < tdee * (1 - GoalManager.MAX_CUT_DEFICIT_PCT - 0.02)) list.push({ type: "warning", message: "Le déficit calorique actuel est important — reste vigilant sur la récupération." });
+    if (tdee && calorieTarget && calorieTarget > tdee * (1 + GoalManager.MAX_BULK_SURPLUS_PCT + 0.02)) list.push({ type: "warning", message: "Le surplus calorique actuel est important — la prise de gras risque de s'accélérer." });
+    return list;
+  }, [daysSinceLastWeight, nutritionProfile.weightTarget, currentWeight, tdee, calorieTarget]);
+
+  const chartData = useMemo(() => [...nutritionAdjustments].sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date, dateLabel: fmtDate(a.date), calories: a.calorieTarget })), [nutritionAdjustments]);
+
+  if (editingInfo) {
+    return (
+      <div className="px-4 pt-2 pb-6">
+        <NutritionInfoForm theme={theme} profile={nutritionProfile} onUpdate={update} currentWeight={currentWeight} canClose={!missingEssentials} onDone={() => setEditingInfo(false)} />
+        {missingEssentials && (
+          <p style={{ color: theme.textFaint }} className="text-[12px] text-center mt-3">
+            Renseigne au moins la date de naissance, la taille, et une pesée (dans "Poids") pour calculer tes besoins.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 pt-2 space-y-4 pb-6">
+      {notifications.map((n, i) => <NutritionNotificationBanner key={i} theme={theme} notif={n} />)}
+
+      <Card theme={theme} className="p-5" style={{ background: `linear-gradient(135deg, ${theme.accent}14, ${theme.accent2}0a)` }}>
+        <div className="flex items-center justify-between mb-1">
+          <p style={{ color: theme.textMuted }} className="text-[12px] font-medium">Calories recommandées</p>
+          <button onClick={() => setEditingInfo(true)} className="flex items-center gap-1 text-[11.5px] font-bold" style={{ color: theme.accent }}><Edit3 size={12} /> Infos</button>
+        </div>
+        <p style={{ color: theme.text }} className="text-[32px] font-extrabold leading-none">{calorieTarget ? calorieTarget.toLocaleString("fr-FR") : "—"} <span className="text-[15px] font-semibold" style={{ color: theme.textMuted }}>kcal / jour</span></p>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: theme.card2, color: theme.text }}>{NUTRITION_GOALS.find((g) => g.id === nutritionProfile.goal)?.label}</span>
+          <span style={{ color: theme.textFaint }} className="text-[11.5px]">Métabolisme {bmr || "—"} kcal · Dépense totale {tdee || "—"} kcal</span>
+        </div>
+      </Card>
+
+      <Card theme={theme} className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <p style={{ color: theme.text }} className="font-bold text-[14px]">Calories consommées</p>
+          <p style={{ color: theme.textMuted }} className="text-[12.5px]">{todayCalorieEntry ? todayCalorieEntry.calories.toLocaleString("fr-FR") : 0} / {calorieTarget ? calorieTarget.toLocaleString("fr-FR") : "—"} kcal</p>
+        </div>
+        <div className="rounded-full overflow-hidden mb-3" style={{ height: 10, background: theme.card2 }}>
+          <div style={{ height: "100%", width: `${calorieTarget ? Math.min(100, ((todayCalorieEntry?.calories || 0) / calorieTarget) * 100) : 0}%`, background: `linear-gradient(90deg, ${theme.accent}, ${theme.accent2})`, transition: "width 0.4s" }} />
+        </div>
+        <div className="flex items-center gap-2">
+          <input inputMode="decimal" placeholder="Ex : 1800" value={calInput} onChange={(e) => setCalInput(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-2.5 text-[14px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+          <button onClick={saveCalories} className="px-4 py-2.5 rounded-xl font-bold text-[13px] text-white active:scale-95 transition-transform" style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` }}>OK</button>
+        </div>
+        <p style={{ color: theme.textFaint }} className="text-[11px] mt-2">Saisie manuelle quotidienne (pas de journal alimentaire détaillé dans cette version).</p>
+      </Card>
+
+      <Card theme={theme} className="p-4">
+        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2.5">Dépense du jour</p>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Métabolisme de base</span><span style={{ color: theme.text }} className="font-semibold">{bmr || 0} kcal</span></div>
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Séance de musculation</span><span style={{ color: theme.text }} className="font-semibold">{todayStrengthKcal} kcal</span></div>
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Cardio (moyenne)</span><span style={{ color: theme.text }} className="font-semibold">{avgCardioKcal} kcal</span></div>
+          <div className="flex items-center justify-between text-[13.5px] pt-1.5" style={{ borderTop: `1px solid ${theme.border}` }}><span style={{ color: theme.text }} className="font-bold">Total</span><span style={{ color: theme.accent }} className="font-extrabold">{todayTotalBurn} kcal</span></div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-3 gap-2.5">
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[10.5px] font-semibold mb-1">Poids actuel</p><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{currentWeight ? fmtWeight(currentWeight) : "—"}</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[10.5px] font-semibold mb-1">Poids cible</p><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{nutritionProfile.weightTarget ? fmtWeight(nutritionProfile.weightTarget) : "—"}</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[10.5px] font-semibold mb-1">Variation</p><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{currentWeight && nutritionProfile.weightTarget ? `${(currentWeight - nutritionProfile.weightTarget) > 0 ? "+" : ""}${fmtWeight(currentWeight - nutritionProfile.weightTarget)}` : "—"}</p></Card>
+      </div>
+
+      {macros && (
+        <Card theme={theme} className="p-4">
+          <p style={{ color: theme.text }} className="font-bold text-[14px] mb-3">Macronutriments recommandés</p>
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
+              <Beef size={16} color={theme.accent} className="mx-auto mb-1.5" />
+              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.proteinG}g</p>
+              <p style={{ color: theme.textFaint }} className="text-[10px]">Protéines</p>
+            </div>
+            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
+              <Droplet size={16} color={theme.accent2} className="mx-auto mb-1.5" />
+              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.fatG}g</p>
+              <p style={{ color: theme.textFaint }} className="text-[10px]">Lipides</p>
+            </div>
+            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
+              <Wheat size={16} color={theme.good} className="mx-auto mb-1.5" />
+              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.carbsG}g</p>
+              <p style={{ color: theme.textFaint }} className="text-[10px]">Glucides</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {(weeklyAnalysis.status === "too_slow" || weeklyAnalysis.status === "too_fast") && (
+        <Card theme={theme} className="p-4" style={{ border: `1.5px solid ${theme.accent}55` }}>
+          <div className="flex items-center gap-2 mb-2"><Bell size={15} color={theme.accent} /><p style={{ color: theme.text }} className="font-bold text-[14px]">Ajustement suggéré</p></div>
+          <p style={{ color: theme.textMuted }} className="text-[13px] mb-3">{weeklyAnalysis.message}</p>
+          <BigButton theme={theme} gradient onClick={applySuggestion}>
+            {weeklyAnalysis.suggestionKcal > 0 ? "+" : ""}{weeklyAnalysis.suggestionKcal} kcal/jour — Appliquer
+          </BigButton>
+        </Card>
+      )}
+
+      {chartData.length > 1 && (
+        <ChartCard theme={theme} title="Évolution des calories recommandées">
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={theme.border} vertical={false} />
+              <XAxis dataKey="dateLabel" tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} width={30} />
+              <Tooltip contentStyle={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12, fontSize: 12 }} labelStyle={{ color: theme.text }} />
+              <Line type="monotone" dataKey="calories" stroke={theme.accent} strokeWidth={2.5} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      <button onClick={() => setEditingInfo(true)} className="w-full text-center text-[12.5px] font-semibold py-2 flex items-center justify-center gap-1.5" style={{ color: theme.textMuted }}>
+        <Edit3 size={13} /> Modifier mes informations
+      </button>
+    </div>
+  );
+}
+
 // --- "Mon profil" : identité + aperçu rapide de l'activité (voir MyProfileView) --------
+
+/* ============================================================================
+   MOTEUR NUTRITIONNEL — services dédiés, séparés de l'UI et du stockage
+   ============================================================================
+   Toutes les constantes ci-dessous sont des choix documentés (formules reconnues
+   quand elles existent, hypothèses raisonnables sinon) — regroupées ici pour être
+   facilement modifiables sans toucher au reste du fichier.
+*/
+
+// --- EnergyCalculator : métabolisme de base et dépense journalière ----------------------
+const EnergyCalculator = {
+  // Âge exact calculé à partir de la date de naissance (nécessaire pour Mifflin-St Jeor).
+  computeAge(birthdate) {
+    if (!birthdate) return null;
+    const b = new Date(birthdate);
+    const now = new Date();
+    let age = now.getFullYear() - b.getFullYear();
+    const m = now.getMonth() - b.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < b.getDate())) age--;
+    return age;
+  },
+
+  // BMR — formule de Mifflin-St Jeor (1990), la plus fiable et la plus utilisée
+  // aujourd'hui en pratique clinique (plus précise que Harris-Benedict sur des
+  // populations modernes). Homme : +5, Femme : -161.
+  computeBMR({ sex, weightKg, heightCm, age }) {
+    if (!weightKg || !heightCm || age == null) return null;
+    const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
+    return Math.round(sex === "F" ? base - 161 : base + 5);
+  },
+
+  // Coefficients d'activité (PAL — Physical Activity Level), échelle Harris-Benedict
+  // standard. NE COUVRE QUE l'activité quotidienne "hors entraînement structuré" (travail,
+  // marche, pas quotidiens) — les séances de musculation/cardio sont ajoutées à part par
+  // WorkoutCalorieEstimator, pour éviter de compter deux fois le même effort.
+  ACTIVITY_MULTIPLIERS: {
+    sedentary: 1.2,   // Sédentaire — travail de bureau, peu de marche
+    light: 1.375,     // Léger — debout une partie de la journée, marche occasionnelle
+    moderate: 1.55,   // Modéré — travail physique léger ou marche régulière
+    high: 1.725,      // Élevé — travail physique
+    very_high: 1.9,   // Très élevé — travail physique intense
+  },
+
+  // TDEE = BMR × multiplicateur d'activité quotidienne + dépense moyenne des
+  // entraînements (calculée séparément par WorkoutCalorieEstimator et lissée sur 7 jours).
+  computeTDEE({ bmr, activityLevel, avgDailyWorkoutKcal }) {
+    if (!bmr) return null;
+    const mult = EnergyCalculator.ACTIVITY_MULTIPLIERS[activityLevel] || EnergyCalculator.ACTIVITY_MULTIPLIERS.sedentary;
+    return Math.round(bmr * mult + (avgDailyWorkoutKcal || 0));
+  },
+};
+
+// --- WorkoutCalorieEstimator : calories dépensées pendant une séance --------------------
+// Basé sur des valeurs MET (Metabolic Equivalent of Task) issues du Compendium of
+// Physical Activities (Ainsworth et al.) — référence scientifique standard.
+// Formule générale : kcal = MET × poids(kg) × durée(heures).
+const WorkoutCalorieEstimator = {
+  // MET musculation selon l'intensité estimée (tonnage soulevé par minute de séance,
+  // repos inclus — une séance dense/lourde a un MET plus élevé qu'une séance légère).
+  // Hypothèse documentée et ajustable : ces seuils sont une approximation raisonnable,
+  // pas une mesure directe de la dépense énergétique réelle.
+  STRENGTH_MET_BY_INTENSITY: { light: 3.5, moderate: 5.0, vigorous: 6.0 },
+  CARDIO_MET_MODERATE: 7.0, // course/vélo modéré — Compendium ≈ 6-8 MET
+
+  estimateIntensity(tonnageKg, durationSec) {
+    if (!durationSec) return "light";
+    const perMinute = tonnageKg / (durationSec / 60);
+    if (perMinute >= 50) return "vigorous";
+    if (perMinute >= 20) return "moderate";
+    return "light";
+  },
+
+  // Séance de musculation réellement enregistrée dans l'app (tonnage + durée connus).
+  estimateStrengthSessionKcal({ tonnage, durationSec, bodyWeightKg }) {
+    if (!durationSec || !bodyWeightKg) return 0;
+    const intensity = WorkoutCalorieEstimator.estimateIntensity(tonnage || 0, durationSec);
+    const met = WorkoutCalorieEstimator.STRENGTH_MET_BY_INTENSITY[intensity];
+    const hours = durationSec / 3600;
+    return Math.round(met * bodyWeightKg * hours);
+  },
+
+  // Cardio : l'app ne journalise pas de séances cardio dédiées, donc on estime une
+  // moyenne à partir de ce que l'utilisateur a déclaré dans son profil (fréquence ×
+  // durée par semaine), lissée sur 7 jours pour le calcul du TDEE quotidien.
+  estimateAvgDailyCardioKcal({ cardioSessionsPerWeek, cardioDurationMin, bodyWeightKg }) {
+    if (!cardioSessionsPerWeek || !cardioDurationMin || !bodyWeightKg) return 0;
+    const hoursPerWeek = (cardioSessionsPerWeek * cardioDurationMin) / 60;
+    const weeklyKcal = WorkoutCalorieEstimator.CARDIO_MET_MODERATE * bodyWeightKg * hoursPerWeek;
+    return Math.round(weeklyKcal / 7);
+  },
+};
+
+// --- GoalManager : calories cibles selon l'objectif (Sèche / Maintien / Prise de masse) -
+const GoalManager = {
+  // Déficit/surplus par défaut, DANS la plage demandée (15-20% en sèche, 5-15% en prise
+  // de masse). Valeurs médianes choisies comme point de départ raisonnable, modifiables.
+  DEFAULT_CUT_DEFICIT_PCT: 0.175,
+  MIN_CUT_DEFICIT_PCT: 0.15,
+  MAX_CUT_DEFICIT_PCT: 0.20,
+  DEFAULT_BULK_SURPLUS_PCT: 0.10,
+  MIN_BULK_SURPLUS_PCT: 0.05,
+  MAX_BULK_SURPLUS_PCT: 0.15,
+
+  // `adjustmentKcal` = ajustement cumulé proposé par l'algorithme hebdomadaire (section 6),
+  // appliqué par-dessus le calcul de base une fois que l'utilisateur l'a validé.
+  computeCalorieTarget({ tdee, goal, adjustmentKcal = 0 }) {
+    if (!tdee) return null;
+    let base;
+    if (goal === "cut") {
+      const pct = Math.min(GoalManager.MAX_CUT_DEFICIT_PCT, Math.max(GoalManager.MIN_CUT_DEFICIT_PCT, GoalManager.DEFAULT_CUT_DEFICIT_PCT));
+      base = tdee * (1 - pct);
+    } else if (goal === "bulk") {
+      const pct = Math.min(GoalManager.MAX_BULK_SURPLUS_PCT, Math.max(GoalManager.MIN_BULK_SURPLUS_PCT, GoalManager.DEFAULT_BULK_SURPLUS_PCT));
+      base = tdee * (1 + pct);
+    } else {
+      base = tdee;
+    }
+    const target = base + adjustmentKcal;
+    // Garde-fou de sécurité : jamais en dessous du métabolisme de base, quel que soit
+    // l'ajustement cumulé (évite un déficit dangereux au fil des semaines).
+    return Math.round(target);
+  },
+};
+
+// --- NutritionCalculator : répartition des macronutriments ------------------------------
+const NutritionCalculator = {
+  // g/kg de poids corporel par objectif — fourchettes usuelles en nutrition sportive.
+  MACRO_RANGES: {
+    cut: { proteinPerKg: 2.1, fatPerKg: 0.9 },      // 2-2.2 g/kg protéines, 0.8-1 g/kg lipides
+    maintain: { proteinPerKg: 1.8, fatPerKg: 1.0 },
+    bulk: { proteinPerKg: 1.9, fatPerKg: 1.0 },
+  },
+  computeMacros({ calories, weightKg, goal }) {
+    if (!calories || !weightKg) return null;
+    const { proteinPerKg, fatPerKg } = NutritionCalculator.MACRO_RANGES[goal] || NutritionCalculator.MACRO_RANGES.maintain;
+    const proteinG = Math.round(proteinPerKg * weightKg);
+    const fatG = Math.round(fatPerKg * weightKg);
+    const proteinKcal = proteinG * 4;
+    const fatKcal = fatG * 9;
+    const carbsKcal = Math.max(0, calories - proteinKcal - fatKcal);
+    const carbsG = Math.round(carbsKcal / 4);
+    return { proteinG, fatG, carbsG, proteinKcal, fatKcal, carbsKcal };
+  },
+};
+
+// --- WeeklyAdaptiveAlgorithm : ajuste progressivement les calories selon les résultats --
+const WeeklyAdaptiveAlgorithm = {
+  // Objectifs de variation hebdomadaire raisonnables (grammes/semaine), documentés.
+  WEEKLY_TARGET_G: { cut: -500, maintain: 0, bulk: 300 },
+  ADJUSTMENT_STEP_KCAL: 125, // "100 à 150 kcal" demandé -> valeur médiane
+
+  // Moyenne du poids sur les 7 derniers jours d'une fenêtre donnée (jamais une seule
+  // pesée isolée, comme demandé).
+  weeklyAverage(entries, fromTs, toTs) {
+    const inWindow = entries.filter((e) => {
+      const t = new Date(e.date).getTime();
+      return t >= fromTs && t < toTs;
+    });
+    if (!inWindow.length) return null;
+    return inWindow.reduce((a, e) => a + e.weight, 0) / inWindow.length;
+  },
+
+  // Compare les deux dernières semaines pleines à l'objectif, et propose un ajustement
+  // (jamais appliqué automatiquement sans confirmation — voir NutritionScreen).
+  analyze({ weightEntries, goal }) {
+    const now = Date.now();
+    const week1Start = now - 14 * 86400000, week1End = now - 7 * 86400000;
+    const week2Start = now - 7 * 86400000, week2End = now;
+    const avgWeek1 = WeeklyAdaptiveAlgorithm.weeklyAverage(weightEntries, week1Start, week1End);
+    const avgWeek2 = WeeklyAdaptiveAlgorithm.weeklyAverage(weightEntries, week2Start, week2End);
+    if (avgWeek1 == null || avgWeek2 == null) return { status: "insufficient_data" };
+
+    const deltaG = (avgWeek2 - avgWeek1) * 1000;
+    const targetG = WeeklyAdaptiveAlgorithm.WEEKLY_TARGET_G[goal] ?? 0;
+    const step = WeeklyAdaptiveAlgorithm.ADJUSTMENT_STEP_KCAL;
+
+    if (goal === "cut") {
+      if (deltaG > targetG + 150) return { status: "too_slow", suggestionKcal: -step, message: `Perte plus lente que prévu (${Math.round(deltaG)} g cette semaine, objectif ${targetG} g). Réduire légèrement les calories ?` };
+      if (deltaG < targetG - 300) return { status: "too_fast", suggestionKcal: step, message: `Perte plus rapide que prévu (${Math.round(deltaG)} g). Remonter un peu les calories pour préserver la masse musculaire ?` };
+    } else if (goal === "bulk") {
+      if (deltaG < targetG - 150) return { status: "too_slow", suggestionKcal: step, message: `Prise de poids plus lente que prévu (${Math.round(deltaG)} g). Augmenter légèrement les calories ?` };
+      if (deltaG > targetG + 300) return { status: "too_fast", suggestionKcal: -step, message: `Prise de poids plus rapide que prévu (${Math.round(deltaG)} g). Réduire un peu le surplus ?` };
+    }
+    return { status: "on_track", deltaG: Math.round(deltaG) };
+  },
+};
 
 /* ============================== DASHBOARD ============================== */
 
@@ -1248,16 +1942,26 @@ function lastPerformanceFor(sessions, exerciseName) {
 // active tant que ce bouton n'a pas été pressé.
 function ProgramSelectCard({ theme, program, selected, onSelect }) {
   const count = flattenExercises(program.blocks).length;
+  const muscleGroups = program.muscleGroups || [];
   return (
     <button onClick={onSelect} className="w-full text-left active:scale-[0.98] transition-transform">
       <Card
-        theme={theme} className="p-4 flex items-center gap-3"
+        theme={theme} className="p-3.5 flex items-center gap-3"
         style={{ border: `1.5px solid ${selected ? theme.accent : theme.border}`, background: selected ? `${theme.accent}14` : theme.card }}
       >
-        <div style={{ width: 10, height: 10, borderRadius: 999, background: program.color || theme.accent }} className="shrink-0" />
+        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 56, height: 56, background: theme.card2 }}>
+          {muscleGroups.length ? (
+            <MuscleIllustration theme={theme} muscles={muscleGroups} size={44} />
+          ) : (
+            <div style={{ width: 10, height: 10, borderRadius: 999, background: program.color || theme.accent }} />
+          )}
+        </div>
         <div className="flex-1 min-w-0">
           <p style={{ color: theme.text }} className="font-bold text-[15px] truncate">{program.name}</p>
-          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{count} exercice{count !== 1 ? "s" : ""}</p>
+          {muscleGroups.length > 0 && (
+            <p style={{ color: theme.textMuted }} className="text-[11.5px] mt-0.5 truncate">{muscleGroups.map(muscleLabel).join(" • ")}</p>
+          )}
+          <p style={{ color: theme.textFaint }} className="text-[11.5px] mt-0.5">{count} exercice{count !== 1 ? "s" : ""}</p>
         </div>
         {selected ? (
           <IconBadge theme={theme} icon={Check} size={28} iconSize={14} filled />
@@ -1332,7 +2036,7 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
       <div className="grid grid-cols-2 gap-3">
         <Card theme={theme} className="p-4">
           <div className="flex items-center gap-1.5 mb-1"><Scale size={13} color={theme.textMuted} /><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold">Poids actuel</p></div>
-          <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{lastWeight ? `${lastWeight.weight} kg` : "—"}</p>
+          <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{lastWeight ? `${fmtWeight(lastWeight.weight)} kg` : "—"}</p>
           {lastWeight && <p style={{ color: theme.textFaint }} className="text-[11px] mt-0.5">{fmtDate(lastWeight.date)}</p>}
         </Card>
         <Card theme={theme} className="p-4">
@@ -1390,7 +2094,7 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
 
 function ProgramsList({ theme, programs, setPrograms, onOpen, onStart }) {
   const addProgram = () => {
-    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, blocks: [], absExercises: [] };
+    const p = { id: uid(), name: "Nouveau programme", color: theme.accent, blocks: [], absExercises: [], muscleGroups: [] };
     setPrograms((ps) => [...ps, p]);
     onOpen(p.id);
   };
@@ -1400,19 +2104,27 @@ function ProgramsList({ theme, programs, setPrograms, onOpen, onStart }) {
       {programs.map((p) => {
         const count = flattenExercises(p.blocks).length;
         const groupCount = (p.blocks || []).filter((b) => b.exercises.length > 1).length;
+        const muscleGroups = p.muscleGroups || [];
         return (
-          <Card key={p.id} theme={theme} className="p-4">
-            <div className="flex items-center justify-between">
-              <button className="flex-1 text-left" onClick={() => onOpen(p.id)}>
-                <div className="flex items-center gap-2.5">
-                  <div style={{ width: 10, height: 10, borderRadius: 999, background: p.color || theme.accent }} />
-                  <p style={{ color: theme.text }} className="font-bold text-[16px]">{p.name}</p>
+          <Card key={p.id} theme={theme} className="p-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <button className="flex-1 flex items-center gap-3 text-left min-w-0" onClick={() => onOpen(p.id)}>
+                <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 52, height: 52, background: theme.card2 }}>
+                  {muscleGroups.length ? (
+                    <MuscleIllustration theme={theme} muscles={muscleGroups} size={40} />
+                  ) : (
+                    <div style={{ width: 10, height: 10, borderRadius: 999, background: p.color || theme.accent }} />
+                  )}
                 </div>
-                <p style={{ color: theme.textMuted }} className="text-[12.5px] mt-1 ml-[18px]">
-                  {count} exercice{count !== 1 ? "s" : ""}{groupCount > 0 ? ` · ${groupCount} enchaînement${groupCount !== 1 ? "s" : ""}` : ""}
-                </p>
+                <div className="min-w-0">
+                  <p style={{ color: theme.text }} className="font-bold text-[15.5px] truncate">{p.name}</p>
+                  {muscleGroups.length > 0 && <p style={{ color: theme.textMuted }} className="text-[11.5px] mt-0.5 truncate">{muscleGroups.map(muscleLabel).join(" • ")}</p>}
+                  <p style={{ color: theme.textFaint }} className="text-[11.5px] mt-0.5">
+                    {count} exercice{count !== 1 ? "s" : ""}{groupCount > 0 ? ` · ${groupCount} enchaînement${groupCount !== 1 ? "s" : ""}` : ""}
+                  </p>
+                </div>
               </button>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <IconButton theme={theme} onClick={() => onStart(p)}><Play size={15} color={theme.accent} fill={theme.accent} /></IconButton>
                 <IconButton theme={theme} onClick={() => onOpen(p.id)}><ChevronRight size={16} color={theme.textMuted} /></IconButton>
               </div>
@@ -1438,6 +2150,11 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
 
   const updateProgram = (fn) => setPrograms((ps) => ps.map((p) => (p.id === program.id ? fn({ ...p }) : p)));
   const setBlocks = (blocks) => updateProgram((p) => ({ ...p, blocks }));
+  const muscleGroups = program.muscleGroups || [];
+  const toggleMuscleGroup = (id) => updateProgram((p) => {
+    const cur = p.muscleGroups || [];
+    return { ...p, muscleGroups: cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id] };
+  });
   const absExercises = program.absExercises || [];
   const setAbsExercises = (list) => updateProgram((p) => ({ ...p, absExercises: list }));
   const updateAbsExercise = (id, patch) => setAbsExercises(absExercises.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -1467,12 +2184,12 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
     }));
   };
 
-  const addNewExercise = (ex) => setBlocks([...program.blocks, { id: uid(), restSec: ex.rest || 90, exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes }] }]);
+  const addNewExercise = (ex) => setBlocks([...program.blocks, { id: uid(), restSec: ex.rest || 90, exercises: [{ id: ex.id, name: ex.name, series: ex.series, reps: ex.reps, notes: ex.notes, primaryMuscle: ex.primaryMuscle || null, secondaryMuscles: ex.secondaryMuscles || [] }] }]);
 
   const attachExercise = (blockId, exDef) => {
     setBlocks(program.blocks
       .filter((b) => b.id !== exDef.__sourceBlockId)
-      .map((b) => (b.id === blockId ? { ...b, exercises: [...b.exercises, { id: exDef.id, name: exDef.name, series: exDef.series, reps: exDef.reps, notes: exDef.notes || "" }] } : b)));
+      .map((b) => (b.id === blockId ? { ...b, exercises: [...b.exercises, { id: exDef.id, name: exDef.name, series: exDef.series, reps: exDef.reps, notes: exDef.notes || "", primaryMuscle: exDef.primaryMuscle || null, secondaryMuscles: exDef.secondaryMuscles || [] }] } : b)));
     setPairTarget(null);
   };
 
@@ -1505,6 +2222,11 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
             <Edit2 size={13} color={theme.textFaint} />
           </button>
         )}
+      </div>
+
+      <div>
+        <SectionTitle theme={theme}>Groupes musculaires ciblés</SectionTitle>
+        <MuscleGroupPicker theme={theme} selected={muscleGroups} onToggle={toggleMuscleGroup} />
       </div>
 
       <BigButton theme={theme} gradient onClick={() => onStart(program)}>
@@ -1583,9 +2305,9 @@ function ProgramEditor({ theme, program, setPrograms, onBack, onStart }) {
       <AnimatePresence>
         {showAddAbs && (
           <AddExerciseSheet
-            theme={theme} allowDuration title="Ajouter un exercice abdos"
+            theme={theme} allowDuration title="Ajouter un exercice abdos" showMuscle={false} defaultPrimaryMuscle="abdominaux"
             onClose={() => setShowAddAbs(false)}
-            onAdd={(ex) => { addAbsExercise(ex); setShowAddAbs(false); }}
+            onAdd={(ex) => { addAbsExercise({ ...ex, primaryMuscle: "abdominaux" }); setShowAddAbs(false); }}
           />
         )}
       </AnimatePresence>
@@ -1652,13 +2374,24 @@ function AbsExerciseRow({ theme, exercise, onUpdate, onRemove }) {
 
 function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemove, onCreateSuperset }) {
   const [open, setOpen] = useState(false);
+  const toggleSecondary = (id) => {
+    const cur = exercise.secondaryMuscles || [];
+    onUpdate({ secondaryMuscles: cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id] });
+  };
   return (
     <Card theme={theme} className="overflow-hidden">
       <div className="flex items-center gap-2 p-3.5">
         <GripVertical size={16} color={theme.textFaint} className="cursor-grab shrink-0" />
-        <button className="flex-1 text-left" onClick={() => setOpen((o) => !o)}>
-          <p style={{ color: theme.text }} className="font-semibold text-[14.5px]">{exercise.name}</p>
-          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{exercise.series} × {exercise.reps} reps · repos {restSec}s</p>
+        {exercise.primaryMuscle && (
+          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 34, height: 34, background: theme.card2 }}>
+            <MuscleIllustration theme={theme} muscles={exercise.primaryMuscle} size={26} />
+          </div>
+        )}
+        <button className="flex-1 text-left min-w-0" onClick={() => setOpen((o) => !o)}>
+          <p style={{ color: theme.text }} className="font-semibold text-[14.5px] truncate">{exercise.name}</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">
+            {exercise.series} × {exercise.reps} reps · repos {restSec}s{exercise.primaryMuscle ? ` · ${muscleLabel(exercise.primaryMuscle)}` : ""}
+          </p>
         </button>
         <ChevronDown size={16} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} onClick={() => setOpen((o) => !o)} />
       </div>
@@ -1674,6 +2407,31 @@ function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemov
                 <MiniStepper theme={theme} label="Reps" value={exercise.reps} onChange={(v) => onUpdate({ reps: v })} />
                 <MiniStepper theme={theme} label="Repos" value={restSec} step={15} onChange={onUpdateRest} suffix="s" />
               </div>
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  {exercise.primaryMuscle && (
+                    <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 48, height: 48, background: theme.card2 }}>
+                      <MuscleIllustration theme={theme} muscles={exercise.primaryMuscle} size={38} />
+                    </div>
+                  )}
+                  <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Muscle principal</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mb-2.5">
+                  {MUSCLE_GROUPS.map((m) => (
+                    <Pill key={m.id} theme={theme} active={exercise.primaryMuscle === m.id} onClick={() => onUpdate({ primaryMuscle: exercise.primaryMuscle === m.id ? null : m.id })}>{m.label}</Pill>
+                  ))}
+                </div>
+                {exercise.primaryMuscle && (
+                  <>
+                    <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Muscles secondaires</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {MUSCLE_GROUPS.filter((m) => m.id !== exercise.primaryMuscle).map((m) => (
+                        <Pill key={m.id} theme={theme} active={(exercise.secondaryMuscles || []).includes(m.id)} onClick={() => toggleSecondary(m.id)}>{m.label}</Pill>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
               <textarea placeholder="Notes (technique, variante...)" value={exercise.notes} onChange={(e) => onUpdate({ notes: e.target.value })}
                 className="w-full rounded-xl p-2.5 text-[13px] outline-none resize-none" rows={2}
                 style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
@@ -1682,7 +2440,7 @@ function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemov
                   <Trash2 size={12} /> Retirer cet exercice
                 </button>
                 <button onClick={onCreateSuperset} className="text-[12.5px] font-bold flex items-center gap-1.5" style={{ color: theme.accent }}>
-                  <Link2 size={12} /> Créer un biset
+                  <Link2 size={12} /> Ajouter à un superset
                 </button>
               </div>
             </div>
@@ -1777,7 +2535,7 @@ function PairExerciseSheet({ theme, title, candidates, onClose, onPickExisting, 
     <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: "85vh", overflowY: "auto" }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: "85vh", overflowY: "auto", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1 flex items-center gap-1.5"><Link2 size={16} color={theme.accent} /> {title}</h3>
         <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Choisis un exercice existant du programme ou crées-en un nouveau.</p>
@@ -1854,21 +2612,24 @@ const COMMON_EXERCISES = [
   "Élévations latérales", "Presse à cuisses", "Fentes", "Dips", "Gainage", "Hip thrust",
 ];
 
-function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title = "Ajouter un exercice" }) {
+function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title = "Ajouter un exercice", showMuscle = true, defaultPrimaryMuscle = null }) {
   const [name, setName] = useState("");
   const [series, setSeries] = useState(4);
   const [unit, setUnit] = useState("reps"); // 'reps' | 'sec' (uniquement pertinent si allowDuration)
   const [reps, setReps] = useState(10);
   const [rest, setRest] = useState(90);
+  const [primaryMuscle, setPrimaryMuscle] = useState(defaultPrimaryMuscle);
+  const [secondaryMuscles, setSecondaryMuscles] = useState([]);
   const filtered = name ? COMMON_EXERCISES.filter((e) => e.toLowerCase().includes(name.toLowerCase())) : COMMON_EXERCISES.slice(0, 5);
 
   const switchUnit = (u) => { setUnit(u); setReps(u === "sec" ? 30 : 10); };
+  const toggleSecondary = (id) => setSecondaryMuscles((cur) => (cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]));
 
   return (
     <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: "85vh", overflowY: "auto" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">{title}</h3>
         <div className="relative mb-2">
@@ -1889,12 +2650,32 @@ function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title 
             <Pill theme={theme} active={unit === "sec"} onClick={() => switchUnit("sec")}>Durée (secondes)</Pill>
           </div>
         )}
+        {showMuscle && (
+          <div className="mb-4">
+            <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Muscle principal</p>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {MUSCLE_GROUPS.map((m) => (
+                <Pill key={m.id} theme={theme} active={primaryMuscle === m.id} onClick={() => setPrimaryMuscle(primaryMuscle === m.id ? null : m.id)}>{m.label}</Pill>
+              ))}
+            </div>
+            {primaryMuscle && (
+              <>
+                <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Muscles secondaires (optionnel)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {MUSCLE_GROUPS.filter((m) => m.id !== primaryMuscle).map((m) => (
+                    <Pill key={m.id} theme={theme} active={secondaryMuscles.includes(m.id)} onClick={() => toggleSecondary(m.id)}>{m.label}</Pill>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-2 mb-5">
           <MiniStepper theme={theme} label="Séries" value={series} onChange={setSeries} />
           <MiniStepper theme={theme} label={unit === "sec" ? "Secondes" : "Reps"} value={reps} step={unit === "sec" ? 10 : 1} onChange={setReps} />
           <MiniStepper theme={theme} label="Repos" value={rest} step={15} onChange={setRest} suffix="s" />
         </div>
-        <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), series, reps, rest, restSec: rest, unit, notes: "" })}>
+        <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), series, reps, rest, restSec: rest, unit, notes: "", primaryMuscle, secondaryMuscles })}>
           <Plus size={17} /> Ajouter
         </BigButton>
       </motion.div>
@@ -2305,10 +3086,20 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
           style={{ color: theme.text, borderColor: theme.accent }}
         />
       ) : (
-        <button onClick={() => setEditingName(true)} className="flex items-center gap-2 text-left mb-1">
-          <h2 style={{ color: theme.text }} className="text-[23px] font-extrabold leading-tight">{log.name}</h2>
-          <Edit2 size={14} color={theme.textFaint} className="shrink-0" />
-        </button>
+        <div className="flex items-start gap-3 mb-1">
+          {log.primaryMuscle && (
+            <div className="rounded-2xl shrink-0 flex items-center justify-center" style={{ width: 52, height: 52, background: theme.card2 }}>
+              <MuscleIllustration theme={theme} muscles={log.primaryMuscle} size={40} />
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <button onClick={() => setEditingName(true)} className="flex items-center gap-2 text-left">
+              <h2 style={{ color: theme.text }} className="text-[21px] font-extrabold leading-tight truncate">{log.name}</h2>
+              <Edit2 size={13} color={theme.textFaint} className="shrink-0" />
+            </button>
+            {log.primaryMuscle && <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{muscleLabel(log.primaryMuscle)}{log.secondaryMuscles?.length ? ` · ${log.secondaryMuscles.map(muscleLabel).join(", ")}` : ""}</p>}
+          </div>
+        </div>
       )}
       <p style={{ color: theme.accent }} className="text-[14px] font-bold mb-4">Série {round + 1} / {totalRounds}</p>
 
@@ -2579,6 +3370,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
       id: uid(), restSec: ex.rest || restDefault,
       exerciseLogs: [{
         exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: "reps", notes: ex.notes || "",
+        primaryMuscle: ex.primaryMuscle || null, secondaryMuscles: ex.secondaryMuscles || [],
         sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
       }],
     };
@@ -2803,7 +3595,7 @@ function ConfirmSheet({ theme, title, subtitle, confirmLabel, onConfirm, onCance
     <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onCancel} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5 pb-8 text-center" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
+        className="relative w-full rounded-t-3xl p-5 text-center" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1">{title}</h3>
         {subtitle && <p style={{ color: theme.textMuted }} className="text-[13px] mb-5">{subtitle}</p>}
@@ -3291,6 +4083,10 @@ function ChartCard({ theme, title, children }) {
 
 function WeightPage({ theme, entries, setEntries, settings, setSettings }) {
   const [showAdd, setShowAdd] = useState(false);
+  // Buffer texte séparé du nombre stocké : évite que la virgule tapée en cours de saisie
+  // soit effacée à chaque frappe (le champ ne doit refléter que ce que l'utilisateur tape,
+  // pas la valeur numérique déjà "committée" dans les réglages).
+  const [goalDraft, setGoalDraft] = useState(() => (settings.goalWeight != null ? String(settings.goalWeight) : ""));
   const sorted = useMemo(() => [...entries].sort((a, b) => a.date.localeCompare(b.date)), [entries]);
   const latest = sorted[sorted.length - 1];
   const first = sorted[0];
@@ -3326,12 +4122,12 @@ function WeightPage({ theme, entries, setEntries, settings, setSettings }) {
         <div className="flex items-end justify-between">
           <div>
             <p style={{ color: theme.textMuted }} className="text-[12px] font-medium">Poids actuel</p>
-            <p style={{ color: theme.text }} className="text-[34px] font-extrabold leading-none mt-1">{latest ? latest.weight : "—"}<span className="text-[16px] font-semibold" style={{ color: theme.textMuted }}> kg</span></p>
+            <p style={{ color: theme.text }} className="text-[34px] font-extrabold leading-none mt-1">{latest ? fmtWeight(latest.weight) : "—"}<span className="text-[16px] font-semibold" style={{ color: theme.textMuted }}> kg</span></p>
           </div>
           {first && latest && (
             <span className="flex items-center gap-1 font-bold text-[13px] mb-1" style={{ color: latest.weight <= first.weight ? theme.good : theme.bad }}>
               {latest.weight <= first.weight ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
-              {Math.abs(latest.weight - first.weight).toFixed(1)} kg
+              {fmtWeight(Math.abs(latest.weight - first.weight))} kg
             </span>
           )}
         </div>
@@ -3353,10 +4149,10 @@ function WeightPage({ theme, entries, setEntries, settings, setSettings }) {
       )}
 
       <div className="grid grid-cols-2 gap-2.5">
-        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Moyenne 7j</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{weeklyAvg ? weeklyAvg.toFixed(1) : "—"} kg</p></Card>
-        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Variation 30j</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{monthlyChange != null ? `${monthlyChange > 0 ? "+" : ""}${monthlyChange.toFixed(1)}` : "—"} kg</p></Card>
-        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids max</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{maxW || "—"} kg</p></Card>
-        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids min</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{minW || "—"} kg</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Moyenne 7j</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{weeklyAvg ? fmtWeight(weeklyAvg) : "—"} kg</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Variation 30j</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{monthlyChange != null ? `${monthlyChange > 0 ? "+" : ""}${fmtWeight(monthlyChange)}` : "—"} kg</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids max</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{maxW ? fmtWeight(maxW) : "—"} kg</p></Card>
+        <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids min</p><p style={{ color: theme.text }} className="text-[17px] font-extrabold">{minW ? fmtWeight(minW) : "—"} kg</p></Card>
       </div>
 
       <Card theme={theme} className="p-4">
@@ -3364,7 +4160,18 @@ function WeightPage({ theme, entries, setEntries, settings, setSettings }) {
           <p style={{ color: theme.text }} className="font-bold text-[14px] flex items-center gap-1.5"><Target size={14} color={theme.accent} /> Objectif de poids</p>
         </div>
         <div className="flex items-center gap-2">
-          <input inputMode="decimal" placeholder="Ex: 75" value={settings.goalWeight ?? ""} onChange={(e) => setSettings((s) => ({ ...s, goalWeight: e.target.value ? Number(e.target.value) : null }))}
+          <input
+            inputMode="decimal" placeholder="Ex: 75" value={goalDraft}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setGoalDraft(raw);
+              if (raw.trim() === "") { setSettings((s) => ({ ...s, goalWeight: null })); return; }
+              const parsed = parseLocaleNumber(raw);
+              if (Number.isFinite(parsed) && parsed > 0) setSettings((s) => ({ ...s, goalWeight: parsed }));
+              // Sinon (ex: "75," en cours de frappe, ou texte invalide) : on laisse le
+              // buffer affiché tel quel sans toucher au réglage tant que ce n'est pas
+              // un nombre valide, plutôt que d'écraser avec NaN.
+            }}
             className="flex-1 rounded-xl px-3 py-2.5 text-[14.5px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
           <span style={{ color: theme.textMuted }} className="text-[13px]">kg</span>
         </div>
@@ -3389,7 +4196,7 @@ function WeightPage({ theme, entries, setEntries, settings, setSettings }) {
                   {e.comment && <p style={{ color: theme.textFaint }} className="text-[11px] italic mt-0.5">{e.comment}</p>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <p style={{ color: theme.text }} className="font-bold text-[15px]">{e.weight} kg</p>
+                  <p style={{ color: theme.text }} className="font-bold text-[15px]">{fmtWeight(e.weight)} kg</p>
                   <button onClick={() => setEntries((arr) => arr.filter((x) => x.id !== e.id))}><X size={14} color={theme.textFaint} /></button>
                 </div>
               </div>
@@ -3411,23 +4218,41 @@ function AddWeightSheet({ theme, onClose, onAdd }) {
   const [waist, setWaist] = useState("");
   const [bodyfat, setBodyfat] = useState("");
   const [comment, setComment] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSave = () => {
+    const parsedWeight = parseLocaleNumber(weight);
+    if (weight.trim() === "") { setError("Indique un poids avant d'enregistrer."); return; }
+    if (!Number.isFinite(parsedWeight)) { setError("Poids invalide — utilise uniquement des chiffres (ex : 92,6 ou 92.6)."); return; }
+    if (parsedWeight <= 0) { setError("Le poids doit être supérieur à 0."); return; }
+
+    const parsedWaist = waist.trim() === "" ? null : parseLocaleNumber(waist);
+    const parsedBodyfat = bodyfat.trim() === "" ? null : parseLocaleNumber(bodyfat);
+    if (parsedWaist != null && !Number.isFinite(parsedWaist)) { setError("Tour de taille invalide."); return; }
+    if (parsedBodyfat != null && !Number.isFinite(parsedBodyfat)) { setError("Masse grasse invalide."); return; }
+
+    setError("");
+    onAdd({ id: uid(), date, weight: parsedWeight, waist: parsedWaist, bodyfat: parsedBodyfat, comment });
+  };
+
   return (
     <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5 pb-8" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}` }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">Ajouter une pesée</h3>
         <div className="space-y-2.5">
           <FieldRow theme={theme} label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent outline-none text-right" style={{ color: theme.text }} /></FieldRow>
-          <FieldRow theme={theme} label="Poids (kg)"><input autoFocus inputMode="decimal" placeholder="0" value={weight} onChange={(e) => setWeight(e.target.value)} className="bg-transparent outline-none text-right w-24 font-bold text-[16px]" style={{ color: theme.text }} /></FieldRow>
-          <FieldRow theme={theme} label="Tour de taille (cm)"><input inputMode="decimal" placeholder="optionnel" value={waist} onChange={(e) => setWaist(e.target.value)} className="bg-transparent outline-none text-right w-24" style={{ color: theme.text }} /></FieldRow>
-          <FieldRow theme={theme} label="Masse grasse (%)"><input inputMode="decimal" placeholder="optionnel" value={bodyfat} onChange={(e) => setBodyfat(e.target.value)} className="bg-transparent outline-none text-right w-24" style={{ color: theme.text }} /></FieldRow>
+          <FieldRow theme={theme} label="Poids (kg)"><input autoFocus inputMode="decimal" placeholder="0" value={weight} onChange={(e) => { setWeight(e.target.value); setError(""); }} className="bg-transparent outline-none text-right w-24 font-bold text-[16px]" style={{ color: theme.text }} /></FieldRow>
+          <FieldRow theme={theme} label="Tour de taille (cm)"><input inputMode="decimal" placeholder="optionnel" value={waist} onChange={(e) => { setWaist(e.target.value); setError(""); }} className="bg-transparent outline-none text-right w-24" style={{ color: theme.text }} /></FieldRow>
+          <FieldRow theme={theme} label="Masse grasse (%)"><input inputMode="decimal" placeholder="optionnel" value={bodyfat} onChange={(e) => { setBodyfat(e.target.value); setError(""); }} className="bg-transparent outline-none text-right w-24" style={{ color: theme.text }} /></FieldRow>
           <textarea placeholder="Commentaire (optionnel)" value={comment} onChange={(e) => setComment(e.target.value)} rows={2}
             className="w-full rounded-xl p-2.5 text-[13px] outline-none resize-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
         </div>
+        {error && <p style={{ color: theme.bad }} className="text-[12.5px] font-semibold mt-3 px-1">{error}</p>}
         <div className="mt-5">
-          <BigButton theme={theme} gradient disabled={!weight} onClick={() => onAdd({ id: uid(), date, weight: Number(weight), waist: waist ? Number(waist) : null, bodyfat: bodyfat ? Number(bodyfat) : null, comment })}>
+          <BigButton theme={theme} gradient onClick={handleSave}>
             <Save size={16} /> Enregistrer
           </BigButton>
         </div>
