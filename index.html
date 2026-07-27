@@ -1,12 +1,39 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/muscu-app/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Verrouille le zoom (pinch-to-zoom ET double-tap-zoom) et active viewport-fit=cover
+      pour pouvoir utiliser env(safe-area-inset-*) (Dynamic Island, coins arrondis, barre
+      d'accueil). C'est la pièce la plus importante de toute la configuration :
+      user-scalable=no + maximum-scale=1 + minimum-scale=1 = zoom désactivé sur iOS et
+      Android ; viewport-fit=cover = l'app peut occuper toute la zone, jusque sous
+      l'encoche, à condition d'ajouter le padding de sécurité correspondant en CSS.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+
+    <!-- Couleur de la barre de statut / splash, doit correspondre au fond sombre de l'app -->
+    <meta name="theme-color" content="#0A0A0B" />
+
+    <!-- Mode PWA plein écran sur iOS (masque la barre d'adresse Safari une fois installée) -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="GymTrack" />
+
+    <!-- Équivalent Android/Chrome -->
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <link rel="manifest" href="/muscu-app/manifest.json" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png" />
+
     <title>muscu-appcd</title>
-    <script type="module" crossorigin src="/muscu-app/assets/index-CHbUMbdq.js"></script>
-    <link rel="stylesheet" crossorigin href="/muscu-app/assets/index-BSjPpuUL.css">
+    <script type="module" crossorigin src="/muscu-app/assets/index-TBgbk_YN.js"></script>
+    <link rel="stylesheet" crossorigin href="/muscu-app/assets/index-D-SPWKVw.css">
   </head>
   <body>
     <div id="root"></div>
