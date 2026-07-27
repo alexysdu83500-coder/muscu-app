@@ -1,1 +1,41 @@
 @import "tailwindcss";
+
+/* ============================================================================
+   Reset global — comportement "app native" (pas de scroll du document, pas de
+   rebond Safari/Chrome, pas de zoom, pas de bande blanche). Ce bloc vivait avant
+   dans un fichier `styles/globals.css` qui n'existe pas dans ce projet -- il est
+   maintenant ici, dans le vrai point d'entrée CSS (`index.css`, importé par
+   main.jsx), avec la syntaxe Tailwind v4 (`@import "tailwindcss";` ci-dessus,
+   PAS les anciennes directives `@tailwind base/components/utilities;` de v3).
+   ============================================================================ */
+
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+  background: #0a0a0b;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}

@@ -1,9 +1,9 @@
 {
-  "name": "GymTrack",
-  "short_name": "GymTrack",
+  "name": "muscu-app",
+  "short_name": "muscu-app",
   "description": "Suivi d'entraînement, progression et poids corporel.",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "/muscu-app/",
+  "scope": "/muscu-app/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0A0A0B",

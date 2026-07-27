@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence, Reorder, useReducedMotion } from "framer-motion";
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -138,6 +138,48 @@ function linRegSlope(points) {
   return { slope, intercept };
 }
 
+/* ============================== PLANNING HEBDOMADAIRE ============================== */
+// Jours de la semaine, lundi en premier.
+const WEEK_DAYS = [
+  { key: "mon", label: "Lundi", short: "L" },
+  { key: "tue", label: "Mardi", short: "M" },
+  { key: "wed", label: "Mercredi", short: "M" },
+  { key: "thu", label: "Jeudi", short: "J" },
+  { key: "fri", label: "Vendredi", short: "V" },
+  { key: "sat", label: "Samedi", short: "S" },
+  { key: "sun", label: "Dimanche", short: "D" },
+];
+
+// `Date.getDay()` renvoie 0 = dimanche...6 = samedi ; on convertit pour que 0 = lundi.
+function getTodayKey() {
+  const jsDay = new Date().getDay();
+  const idx = (jsDay + 6) % 7;
+  return WEEK_DAYS[idx].key;
+}
+
+// Date calendaire (YYYY-MM-DD) de chaque jour de la semaine EN COURS (lundi -> dimanche) —
+// sert à vérifier si une séance a été réalisée tel jour.
+function getCurrentWeekDates() {
+  const now = new Date();
+  const mondayOffset = (now.getDay() + 6) % 7;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - mondayOffset);
+  const map = {};
+  WEEK_DAYS.forEach((d, i) => {
+    const date = new Date(monday);
+    date.setDate(monday.getDate() + i);
+    map[d.key] = date.toISOString().slice(0, 10);
+  });
+  return map;
+}
+
+// Planning par défaut : tous les jours en "Repos" (aucun programme assigné).
+function defaultWeeklyPlanning() {
+  const p = {};
+  WEEK_DAYS.forEach((d) => { p[d.key] = null; });
+  return p;
+}
+
 /* ============================== BLOCKS (single / superset / triset / circuit) ============================== */
 // A program is made of `blocks`. Each block holds 1..N exercises.
 // 1 exercise = normal exercise, 2 = superset (biset), 3 = triset, 4+ = circuit.
@@ -161,6 +203,13 @@ function computeGroupLetters(blocks) {
   });
   return map;
 }
+
+// Version du SCHÉMA DE DONNÉES (la forme des objets stockés, pas la version de l'app).
+// À incrémenter si la forme d'une donnée persistée change un jour (champ renommé,
+// restructuration...) — `normalizeProgram` ci-dessous est l'exemple déjà en place : il
+// répare automatiquement les anciens programmes (format à plat, ou sans absExercises/
+// muscleGroups) sans jamais supprimer de données existantes.
+const SCHEMA_VERSION = 1;
 
 function normalizeProgram(p) {
   if (p.blocks) return { ...p, absExercises: p.absExercises || [], muscleGroups: p.muscleGroups || [] };
@@ -633,12 +682,68 @@ function MuscleGroupPicker({ theme, selected, onToggle }) {
   );
 }
 
+/* ============================== CLAVIER VIRTUEL (audit iOS/Android) ============================== */
+// Sur le web, il n'y a pas de KeyboardAvoidingView/WindowInsets natifs — les équivalents
+// corrects sont l'API Visual Viewport et scrollIntoView(). Ces deux hooks sont appelés une
+// seule fois, dans <App/>, et couvrent TOUS les écrans (aucun champ à instrumenter
+// individuellement) : voir leur usage plus bas pour le détail de ce qu'ils corrigent.
+
+// Suit `window.visualViewport`, qui reflète réellement l'espace visible une fois le
+// clavier ouvert — contrairement à `window.innerHeight` ou à `100dvh` en CSS, qui ne
+// réagissent pas de façon fiable à l'ouverture du clavier sur iOS/Android.
+function useVisualViewport() {
+  const [state, setState] = useState(() => ({
+    height: typeof window !== "undefined" ? (window.visualViewport?.height || window.innerHeight) : 0,
+    isKeyboardOpen: false,
+  }));
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.visualViewport) return undefined;
+    const vv = window.visualViewport;
+    const update = () => {
+      const height = vv.height;
+      // Seuil de 120px : une rétractation de la barre d'adresse ne réduit le viewport que
+      // de quelques dizaines de pixels, jamais plus de ~100px — au-delà, c'est le clavier.
+      const isKeyboardOpen = window.innerHeight - height > 120;
+      setState({ height, isKeyboardOpen });
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  return state;
+}
+
+// Un seul écouteur global : dès qu'un input/textarea reçoit le focus (sur N'IMPORTE QUEL
+// écran), il se recentre automatiquement dans la zone visible au-dessus du clavier.
+function useScrollActiveFieldIntoView() {
+  useEffect(() => {
+    const handleFocusIn = (event) => {
+      const el = event.target;
+      if (!el || !["INPUT", "TEXTAREA"].includes(el.tagName)) return;
+      window.setTimeout(() => {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }, 300);
+    };
+    document.addEventListener("focusin", handleFocusIn);
+    return () => document.removeEventListener("focusin", handleFocusIn);
+  }, []);
+}
+
 /* ============================== APP ROOT ============================== */
 
 export default function App() {
   const prefersReduced = useReducedMotion();
   const [isDark, setIsDark] = usePersistentState_simple("gt_dark", true);
   const theme = useTheme(isDark);
+  // Audit clavier virtuel : ces deux hooks couvrent tous les écrans de l'application.
+  const { height: viewportHeight, isKeyboardOpen } = useVisualViewport();
+  useScrollActiveFieldIntoView();
 
   const [programs, setPrograms, programsLoaded] = usePersistentState("gt_programs_v1", DEFAULT_PROGRAMS);
   const [sessions, setSessions, sessionsLoaded] = usePersistentState("gt_sessions_v1", []);
@@ -669,6 +774,12 @@ export default function App() {
   // Historique des cibles caloriques calculées + des ajustements hebdomadaires appliqués.
   const [nutritionAdjustments, setNutritionAdjustments, adjustmentsLoaded] = usePersistentState("gt_nutrition_adjustments_v1", []);
 
+  // Planning hebdomadaire (Accueil + Profil > Planning hebdomadaire) : programme assigné à
+  // chaque jour de la semaine, par id (donc toujours à jour si un programme est renommé,
+  // et repli propre sur "Aucune séance programmée" s'il est supprimé).
+  const [weeklyPlanning, setWeeklyPlanning, weeklyPlanningLoaded] = usePersistentState("gt_weekly_planning_v1", defaultWeeklyPlanning());
+  const setDayProgram = (dayKey, programId) => setWeeklyPlanning((p) => ({ ...p, [dayKey]: programId }));
+
   // Navigation : seulement 4 onglets. Le sous-détail (programme ouvert, séance ouverte...)
   // vit désormais localement DANS chaque écran concerné (ex: ProfileHub), plus au niveau App.
   const [tab, setTab] = useState("dashboard"); // 'dashboard' | 'workout' | 'progress' | 'profile'
@@ -688,7 +799,7 @@ export default function App() {
   const [sessionStatus, setSessionStatus] = useState(null);
 
   const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded
-    && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded;
+    && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded && weeklyPlanningLoaded;
 
   // Sécurité : force une sauvegarde immédiate de la séance active juste avant que
   // l'utilisateur ne quitte/ferme/rafraîchisse la page, plutôt que d'attendre le debounce.
@@ -705,9 +816,15 @@ export default function App() {
     };
   }, [flushActiveWorkout]);
 
+  // Migration de schéma : garantit que les programmes existants (créés avant l'ajout du
+  // bloc abdos / des groupes musculaires) ont bien tous les champs attendus. `normalizeProgram`
+  // fait déjà tout le travail ; on note juste la version courante dans le stockage, pour
+  // qu'une future évolution du schéma ait un endroit clair où s'accrocher (comparer la
+  // version stockée à SCHEMA_VERSION avant de décider s'il faut migrer autre chose).
   useEffect(() => {
     if (!programsLoaded) return;
     setPrograms((ps) => (ps.some((p) => !p.blocks || !p.absExercises || !p.muscleGroups) ? ps.map(normalizeProgram) : ps));
+    window.storage?.set?.("gt_schema_version", String(SCHEMA_VERSION), false)?.catch?.(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [programsLoaded]);
 
@@ -759,11 +876,19 @@ export default function App() {
 
   return (
     <div
-      style={{ background: theme.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif", maxWidth: 480, margin: "0 auto", position: "relative" }}
+      style={{
+        background: theme.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif",
+        maxWidth: 480, margin: "0 auto", position: "relative",
+        // `100dvh` ne réagit pas de façon fiable à l'ouverture du clavier virtuel sur
+        // iOS/Android : la hauteur est donc pilotée directement par `useVisualViewport`
+        // (window.visualViewport), avec une transition douce plutôt qu'un saut brutal.
+        height: viewportHeight ? `${viewportHeight}px` : undefined,
+        transition: "height 0.25s ease",
+      }}
       className="w-full flex flex-col gt-app-shell"
     >
-      {/* `height: 100dvh` (avec repli 100vh) ancre l'app à la vraie hauteur d'écran, voir
-          l'historique de cette conversation pour le détail du bug que ça corrige. */}
+      {/* `height: 100dvh` (avec repli 100vh) sert de valeur de secours tant que
+          `useVisualViewport` n'a pas encore de mesure (tout premier rendu). */}
       <style>{`.gt-app-shell { height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior: none; }`}</style>
       {/* overscrollBehavior: "contain" empêche le "scroll chaining" — arriver en haut/bas de
           CE conteneur ne fait plus rebondir la page entière derrière lui (le bounce Safari).
@@ -803,6 +928,7 @@ export default function App() {
                 <Dashboard
                   theme={theme} programs={programs} sessions={sessions} weightEntries={weightEntries}
                   settings={settings} setSettings={setSettings} onStart={startWorkout}
+                  weeklyPlanning={weeklyPlanning} onGoToPlanning={() => setTab("profile")}
                 />
               )}
               {tab === "workout" && !activeWorkout && (
@@ -819,13 +945,22 @@ export default function App() {
                   nutritionProfile={nutritionProfile} setNutritionProfile={setNutritionProfile}
                   caloriesLog={caloriesLog} setCaloriesLog={setCaloriesLog}
                   nutritionAdjustments={nutritionAdjustments} setNutritionAdjustments={setNutritionAdjustments}
+                  weeklyPlanning={weeklyPlanning} setDayProgram={setDayProgram}
                   onStartProgram={startWorkout}
-                  onExport={() => exportBackup(programs, sessions, weightEntries, settings)}
+                  onExport={() => exportBackup({
+                    programs, sessions, weightEntries, settings, userProfile,
+                    nutritionProfile, caloriesLog, nutritionAdjustments, weeklyPlanning,
+                  })}
                   onImport={(data) => {
                     if (data.programs) setPrograms(data.programs);
                     if (data.sessions) setSessions(data.sessions);
                     if (data.weightEntries) setWeightEntries(data.weightEntries);
                     if (data.settings) setSettings(data.settings);
+                    if (data.userProfile) setUserProfile(data.userProfile);
+                    if (data.nutritionProfile) setNutritionProfile(data.nutritionProfile);
+                    if (data.caloriesLog) setCaloriesLog(data.caloriesLog);
+                    if (data.nutritionAdjustments) setNutritionAdjustments(data.nutritionAdjustments);
+                    if (data.weeklyPlanning) setWeeklyPlanning(data.weeklyPlanning);
                   }}
                 />
               )}
@@ -835,14 +970,19 @@ export default function App() {
       </div>
 
       {/* Bannière persistante : visible sur n'importe quel autre onglet tant qu'une séance
-          tourne, avec le nom de l'exercice en cours et le chrono en direct. */}
+          tourne, avec le nom de l'exercice en cours et le chrono en direct. Masquée quand
+          le clavier est ouvert (sinon elle resterait par-dessus un champ actif ou un
+          bouton de validation juste en dessous). */}
       <AnimatePresence>
-        {activeWorkout && !showingActiveWorkout && (
+        {activeWorkout && !showingActiveWorkout && !isKeyboardOpen && (
           <ActiveSessionBanner theme={theme} status={sessionStatus} onTap={() => setTab("workout")} />
         )}
       </AnimatePresence>
 
-      <BottomNav theme={theme} tab={tab} setTab={setTab} activeWorkout={!!activeWorkout} />
+      {/* Barre de navigation : masquée pendant que le clavier est ouvert (elle ne sert à
+          rien tant qu'on saisit du texte, et resterait sinon plaquée au-dessus du clavier,
+          cachant potentiellement le bouton d'action juste au-dessus). */}
+      {!isKeyboardOpen && <BottomNav theme={theme} tab={tab} setTab={setTab} activeWorkout={!!activeWorkout} />}
     </div>
   );
 }
@@ -926,12 +1066,17 @@ function programFromSession(session) {
   };
 }
 
-function exportBackup(programs, sessions, weightEntries, settings) {
-  const payload = { programs, sessions, weightEntries, settings, exportedAt: new Date().toISOString() };
+// Sauvegarde locale complète : reprend TOUTES les données utilisateur persistées.
+// `data` est un objet libre : { programs, sessions, weightEntries, settings, userProfile,
+// nutritionProfile, caloriesLog, nutritionAdjustments } — avant ce correctif, seuls
+// programs/sessions/weightEntries/settings étaient inclus : restaurer une sauvegarde sur
+// un nouvel appareil perdait silencieusement le profil et les données nutritionnelles.
+function exportBackup(data) {
+  const payload = { ...data, exportedAt: new Date().toISOString() };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `gymtrack-backup-${todayISO()}.json`;
+  a.href = url; a.download = `muscu-app-backup-${todayISO()}.json`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -1073,6 +1218,7 @@ function SubPageHeader({ theme, title, onBack }) {
 // avoir les deux était le doublon signalé (voir l'explication dans la conversation).
 const PROFILE_MENU_ITEMS = [
   { id: "weight", view: "weight", icon: Scale, label: "Poids", desc: "Poids actuel, évolution, ajout, historique" },
+  { id: "planning", view: "planning", icon: Calendar, label: "Planning hebdomadaire", desc: "Associe un programme à chaque jour de la semaine" },
   { id: "nutrition", view: "nutrition", icon: Utensils, label: "Objectifs nutritionnels", desc: "Calories, macros, coach adaptatif" },
   { id: "progress", view: "progress", icon: TrendingUp, label: "Progression", desc: "Graphiques, charges, évolution des performances" },
   { id: "history", view: "history", icon: HistoryIcon, label: "Historique séances", desc: "Revoir toutes tes séances passées" },
@@ -1251,11 +1397,63 @@ function SettingsPage({ theme, isDark, setIsDark, settings, setSettings, onReset
 // (ProgramsList, ProgramEditor, HistoryList, SessionDetail, WeightPage, StatsPage) —
 // seule leur navigation change : elle est maintenant locale à Profil au lieu de vivre
 // au niveau App.
+// Écran "Planning hebdomadaire" (Profil) : associe un programme existant (ou Repos) à
+// chaque jour. Utilisé automatiquement par <TodaySessionCard/> et <WeeklyPlanningStrip/>
+// sur Accueil.
+function WeeklyPlanningEditor({ theme, programs, weeklyPlanning, setDayProgram }) {
+  const [openDay, setOpenDay] = useState(null);
+
+  if (programs.length === 0) {
+    return (
+      <div className="px-4 pt-2">
+        <Card theme={theme}>
+          <EmptyState theme={theme} icon={Dumbbell} title="Aucun programme" subtitle="Crée d'abord un programme dans Mes programmes pour pouvoir planifier ta semaine." />
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 pt-2 space-y-2.5">
+      <p style={{ color: theme.textMuted }} className="text-[13px] px-1 mb-1">Associe un programme (ou Repos) à chaque jour de la semaine.</p>
+      {WEEK_DAYS.map((d) => {
+        const programId = weeklyPlanning[d.key];
+        const program = programId ? programs.find((p) => p.id === programId) : null;
+        const open = openDay === d.key;
+        return (
+          <Card theme={theme} className="overflow-hidden" key={d.key}>
+            <button className="w-full flex items-center justify-between p-4" onClick={() => setOpenDay(open ? null : d.key)}>
+              <p style={{ color: theme.text }} className="font-bold text-[14.5px]">{d.label}</p>
+              <div className="flex items-center gap-1.5">
+                <span style={{ color: program ? theme.accent : theme.textMuted }} className="text-[13px] font-semibold">
+                  {program ? program.name : "Repos"}
+                </span>
+                <ChevronDown size={15} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+              </div>
+            </button>
+            {open && (
+              <div className="px-4 pb-4 flex flex-wrap gap-2" style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
+                <Pill theme={theme} active={!programId} onClick={() => { setDayProgram(d.key, null); setOpenDay(null); }}>Repos</Pill>
+                {programs.map((p) => (
+                  <Pill key={p.id} theme={theme} active={programId === p.id} onClick={() => { setDayProgram(d.key, p.id); setOpenDay(null); }}>
+                    {p.name}
+                  </Pill>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
 function ProfileHub({
   theme, isDark, setIsDark, programs, setPrograms, sessions, setSessions,
   weightEntries, setWeightEntries, settings, setSettings, onStartProgram, onExport, onImport,
   userProfile, setUserProfile, onResetData,
   nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments,
+  weeklyPlanning, setDayProgram,
 }) {
   const [view, setView] = useState(null); // null = menu racine
   const [programId, setProgramId] = useState(null);
@@ -1360,6 +1558,15 @@ function ProfileHub({
       <div>
         <SubPageHeader theme={theme} title="Évolution du poids" onBack={() => setView(null)} />
         <WeightPage theme={theme} entries={weightEntries} setEntries={setWeightEntries} settings={settings} setSettings={setSettings} />
+      </div>
+    );
+  }
+
+  if (view === "planning") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Planning hebdomadaire" onBack={() => setView(null)} />
+        <WeeklyPlanningEditor theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} setDayProgram={setDayProgram} />
       </div>
     );
   }
@@ -1973,7 +2180,121 @@ function ProgramSelectCard({ theme, program, selected, onSelect }) {
   );
 }
 
-function Dashboard({ theme, programs, sessions, weightEntries, settings, setSettings, onStart }) {
+// Carte principale d'Accueil : détecte automatiquement la séance prévue aujourd'hui selon
+// le planning hebdomadaire (Profil > Planning hebdomadaire) et propose de la démarrer
+// directement, sans étape de sélection manuelle.
+function TodaySessionCard({ theme, programs, weeklyPlanning, sessions, onStart, onPlanify }) {
+  const todayKey = getTodayKey();
+  const todayLabel = WEEK_DAYS.find((d) => d.key === todayKey)?.label;
+  const todayDate = getCurrentWeekDates()[todayKey];
+  const programId = weeklyPlanning[todayKey];
+  const program = programId ? programs.find((p) => p.id === programId) : null;
+  const isDone = sessions.some((s) => s.date === todayDate);
+  const isRest = !programId;
+  const muscles = program?.muscleGroups || [];
+
+  return (
+    <Card theme={theme} className="p-5 relative overflow-hidden">
+      <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: 999, background: `radial-gradient(circle, ${theme.accent}22, transparent 70%)` }} />
+      <p style={{ color: theme.textMuted }} className="text-[12px] font-medium relative">{todayLabel}</p>
+
+      {isRest ? (
+        <div className="flex items-center gap-2.5 mt-1 relative">
+          <IconBadge theme={theme} icon={Zap} size={34} iconSize={16} tone="accent" />
+          <p style={{ color: theme.text }} className="text-[17px] font-extrabold leading-snug">
+            Aujourd'hui est un jour de repos
+          </p>
+        </div>
+      ) : !program ? (
+        <>
+          <p style={{ color: theme.text }} className="text-[19px] font-extrabold mt-1 relative">Aucune séance programmée</p>
+          <div className="relative mt-4">
+            <BigButton theme={theme} onClick={onPlanify}>Planifier</BigButton>
+          </div>
+        </>
+      ) : (
+        <>
+          <p style={{ color: theme.text }} className="text-[22px] font-extrabold mt-0.5 relative">{program.name}</p>
+          {muscles.length > 0 && (
+            <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5 relative">{muscles.map(muscleLabel).join(" • ")}</p>
+          )}
+          <div className="relative mt-4">
+            {isDone ? (
+              <div className="w-full rounded-2xl py-3.5 font-bold text-[14.5px] flex items-center justify-center gap-2" style={{ background: `${theme.good}1f`, color: theme.good }}>
+                <CheckCircle2 size={18} /> Séance du jour terminée
+              </div>
+            ) : (
+              <BigButton theme={theme} gradient onClick={() => onStart(program)}>
+                <Play size={18} fill="#fff" /> Commencer la séance
+              </BigButton>
+            )}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// Bande de planning hebdomadaire (défilement horizontal) : un programme ou "Repos" par
+// jour, jour actuel mis en évidence, coche verte si une séance a été enregistrée ce jour-là.
+function WeeklyPlanningStrip({ theme, programs, weeklyPlanning, sessions }) {
+  const todayKey = getTodayKey();
+  const weekDates = getCurrentWeekDates();
+  const doneDates = new Set(sessions.map((s) => s.date));
+
+  return (
+    <div>
+      <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide mb-2 px-1">Planning de la semaine</p>
+      <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-4 px-4" style={{ scrollbarWidth: "none" }}>
+        {WEEK_DAYS.map((d) => {
+          const programId = weeklyPlanning[d.key];
+          const program = programId ? programs.find((p) => p.id === programId) : null;
+          const isToday = d.key === todayKey;
+          const isDone = doneDates.has(weekDates[d.key]);
+          const isRest = !programId;
+          return (
+            <div
+              key={d.key}
+              className="rounded-2xl shrink-0 flex flex-col items-center justify-center gap-1.5 p-3 relative transition-transform"
+              style={{
+                width: 74, height: 92,
+                background: isToday ? `linear-gradient(160deg, ${theme.accent}, ${theme.accent2})` : theme.card,
+                border: `1.5px solid ${isToday ? "transparent" : theme.border}`,
+                boxShadow: isToday ? `0 8px 20px -8px ${theme.accent}88` : "none",
+              }}
+            >
+              {isToday && (
+                <span
+                  className="absolute -top-2 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full text-[8px] font-extrabold whitespace-nowrap"
+                  style={{ background: theme.text, color: theme.bg }}
+                >
+                  Aujourd'hui
+                </span>
+              )}
+              <span className="text-[10px] font-bold uppercase" style={{ color: isToday ? "rgba(255,255,255,0.85)" : theme.textFaint }}>
+                {d.short}
+              </span>
+              {isDone ? (
+                <div className="rounded-full flex items-center justify-center" style={{ width: 26, height: 26, background: isToday ? "rgba(255,255,255,0.25)" : `${theme.good}22` }}>
+                  <Check size={15} color={isToday ? "#fff" : theme.good} strokeWidth={3} />
+                </div>
+              ) : (
+                <span
+                  className="text-[11px] font-bold text-center leading-tight px-0.5"
+                  style={{ color: isToday ? "#fff" : isRest ? theme.textFaint : theme.text }}
+                >
+                  {isRest ? "Repos" : (program ? program.name : "—")}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ theme, programs, sessions, weightEntries, settings, setSettings, onStart, weeklyPlanning, onGoToPlanning }) {
   const prs = useMemo(() => computePRs(sessions), [sessions]);
   const lastWeight = weightEntries.length ? [...weightEntries].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
   const suggestedIndex = programs.length ? (settings.lastProgramIndex + 1) % programs.length : -1;
@@ -1987,8 +2308,6 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
 
   const last7 = sessions.filter((s) => Date.now() - s.startedAt < 7 * 86400000);
   const tonnage7 = last7.reduce((a, s) => a + (s.tonnage || 0), 0);
-  const avgTonnage = sessions.length ? sessions.slice(0, 6).reduce((a, s) => a + (s.tonnage || 0), 0) / Math.max(1, Math.min(6, sessions.length)) : 0;
-  const ringProgress = avgTonnage ? Math.min(1, tonnage7 / (avgTonnage * 3)) : (last7.length ? 0.3 : 0);
 
   const recentSessions = sessions.slice(0, 3);
   const topPRs = Object.entries(prs).sort((a, b) => b[1].maxWeight - a[1].maxWeight).slice(0, 3);
@@ -2002,17 +2321,9 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
 
   return (
     <div className="px-4 pt-2 space-y-5">
-      <Card theme={theme} className="p-5 relative overflow-hidden">
-        <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: 999, background: `radial-gradient(circle, ${theme.accent}22, transparent 70%)` }} />
-        <div className="flex items-center justify-between relative">
-          <div>
-            <p style={{ color: theme.textMuted }} className="text-[12px] font-medium">Activité de la semaine</p>
-            <p style={{ color: theme.text }} className="text-[22px] font-extrabold mt-0.5">{last7.length} séance{last7.length !== 1 ? "s" : ""}</p>
-            <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{Math.round(tonnage7).toLocaleString("fr-FR")} kg soulevés</p>
-          </div>
-          <EffortRing theme={theme} progress={ringProgress} value={`${Math.round(tonnage7 / 1000) || 0}t`} label="7 jours" />
-        </div>
-      </Card>
+      <TodaySessionCard theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} sessions={sessions} onStart={onStart} onPlanify={onGoToPlanning} />
+
+      <WeeklyPlanningStrip theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} sessions={sessions} />
 
       <div>
         <SectionTitle theme={theme}>Mes séances</SectionTitle>
@@ -2530,12 +2841,17 @@ function PairExerciseSheet({ theme, title, candidates, onClose, onPickExisting, 
   const [name, setName] = useState("");
   const [series, setSeries] = useState(4);
   const [reps, setReps] = useState(10);
+  const { height: viewportHeight } = useVisualViewport();
 
   return (
-    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: "85vh", overflowY: "auto", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1 flex items-center gap-1.5"><Link2 size={16} color={theme.accent} /> {title}</h3>
         <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Choisis un exercice existant du programme ou crées-en un nouveau.</p>
@@ -2624,12 +2940,17 @@ function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title 
 
   const switchUnit = (u) => { setUnit(u); setReps(u === "sec" ? 30 : 10); };
   const toggleSecondary = (id) => setSecondaryMuscles((cur) => (cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]));
+  const { height: viewportHeight } = useVisualViewport();
 
   return (
-    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: "85vh", overflowY: "auto" }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">{title}</h3>
         <div className="relative mb-2">
@@ -3591,11 +3912,16 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
 }
 
 function ConfirmSheet({ theme, title, subtitle, confirmLabel, onConfirm, onCancel, danger }) {
+  const { height: viewportHeight } = useVisualViewport();
   return (
-    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onCancel} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5 text-center" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
+        className="relative w-full rounded-t-3xl p-5 text-center" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1">{title}</h3>
         {subtitle && <p style={{ color: theme.textMuted }} className="text-[13px] mb-5">{subtitle}</p>}
@@ -4219,6 +4545,7 @@ function AddWeightSheet({ theme, onClose, onAdd }) {
   const [bodyfat, setBodyfat] = useState("");
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
+  const { height: viewportHeight } = useVisualViewport();
 
   const handleSave = () => {
     const parsedWeight = parseLocaleNumber(weight);
@@ -4236,10 +4563,14 @@ function AddWeightSheet({ theme, onClose, onAdd }) {
   };
 
   return (
-    <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
-        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
         <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
         <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">Ajouter une pesée</h3>
         <div className="space-y-2.5">
