@@ -12,6 +12,7 @@ import {
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
   Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User, Lock, Zap,
   Utensils, Beef, Wheat, Droplet, Bell, AlertTriangle, Edit3, HeartPulse,
+  Camera, Rocket, Images, Ruler, FileText, FileSpreadsheet, FileJson,
 } from "lucide-react";
 
 /* ============================== STOCKAGE (localStorage) ============================== */
@@ -138,6 +139,75 @@ function linRegSlope(points) {
   return { slope, intercept };
 }
 
+// Estimation générique "combien de temps pour atteindre Y ?" à partir d'une régression
+// linéaire sur des points {x: jours, y: valeur} — utilisée à la fois par l'objectif de
+// poids (WeightPage) et par la Simulation de progression (force + poids corporel).
+// Fonctionne dans les deux sens (progression qui monte OU qui descend) : seul compte le
+// signe de la tendance par rapport à la direction de l'objectif.
+function estimateTargetETA(points, targetY) {
+  if (points.length < 3) return null;
+  const reg = linRegSlope(points);
+  if (!reg || reg.slope === 0) return null;
+  const targetX = (targetY - reg.intercept) / reg.slope;
+  const daysFromNow = targetX - points[points.length - 1].x;
+  if (daysFromNow <= 0 || !isFinite(daysFromNow)) return null;
+  const targetDate = new Date(Date.now() + daysFromNow * 86400000);
+  return { days: Math.round(daysFromNow), date: targetDate, weeklyRate: reg.slope * 7 };
+}
+
+// Lundi de la semaine contenant `date` (minuit) — utilisé pour découper l'historique en
+// semaines calendaires (lundi -> dimanche) dans le calcul du streak hebdomadaire.
+function mondayOfWeek(date) {
+  const d = new Date(date);
+  const offset = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - offset);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Streak "jours consécutifs d'entraînement" : streak courant (jusqu'à aujourd'hui, ou
+// hier si rien fait aujourd'hui — la journée n'est pas encore terminée) + meilleur record
+// jamais atteint (plus longue série de jours consécutifs sur tout l'historique).
+function computeDayStreak(sessions) {
+  const dates = new Set(sessions.map((s) => s.date));
+  const sortedDates = [...dates].sort();
+  let best = 0, current = 0, prevTime = null;
+  for (const d of sortedDates) {
+    const t = new Date(d).getTime();
+    current = prevTime !== null && t - prevTime === 86400000 ? current + 1 : 1;
+    if (current > best) best = current;
+    prevTime = t;
+  }
+  let currentStreak = 0;
+  const cursor = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  if (!dates.has(cursor.toISOString().slice(0, 10))) cursor.setDate(cursor.getDate() - 1);
+  while (dates.has(cursor.toISOString().slice(0, 10))) {
+    currentStreak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return { current: currentStreak, best: Math.max(best, currentStreak) };
+}
+
+// Streak "semaines consécutives où l'objectif a été atteint" : l'objectif hebdomadaire est
+// le nombre de jours assignés dans le planning (gt_weekly_planning_v1). On ne compte que
+// les semaines PLEINES et déjà terminées (la semaine en cours est exclue, elle n'est pas
+// finie) ; le compte s'arrête à la première semaine où l'objectif n'est pas atteint.
+function computeWeeklyStreak(sessions, weeklyPlanning) {
+  const objective = Object.values(weeklyPlanning || {}).filter(Boolean).length;
+  if (!objective) return 0;
+  const sessionDates = sessions.map((s) => new Date(s.date));
+  const thisMonday = mondayOfWeek(new Date());
+  let streak = 0;
+  for (let i = 1; i <= 52; i++) {
+    const weekStart = new Date(thisMonday); weekStart.setDate(weekStart.getDate() - 7 * i);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+    const count = sessionDates.filter((d) => d >= weekStart && d < weekEnd).length;
+    if (count >= objective) streak += 1; else break;
+  }
+  return streak;
+}
+
 /* ============================== PLANNING HEBDOMADAIRE ============================== */
 // Jours de la semaine, lundi en premier.
 const WEEK_DAYS = [
@@ -148,6 +218,14 @@ const WEEK_DAYS = [
   { key: "fri", label: "Vendredi", short: "V" },
   { key: "sat", label: "Samedi", short: "S" },
   { key: "sun", label: "Dimanche", short: "D" },
+];
+
+// Mensurations suivies dans la section Physique — toutes en cm, toutes optionnelles à
+// chaque enregistrement (on ne mesure pas forcément tout à chaque fois).
+const BODY_MEASUREMENTS = [
+  { id: "arm", label: "Bras" }, { id: "forearm", label: "Avant-bras" }, { id: "shoulders", label: "Épaules" },
+  { id: "chest", label: "Poitrine" }, { id: "waist", label: "Taille" }, { id: "hips", label: "Hanches" },
+  { id: "thighs", label: "Cuisses" }, { id: "calves", label: "Mollets" }, { id: "neck", label: "Cou" },
 ];
 
 // `Date.getDay()` renvoie 0 = dimanche...6 = samedi ; on convertit pour que 0 = lundi.
@@ -780,6 +858,12 @@ export default function App() {
   const [weeklyPlanning, setWeeklyPlanning, weeklyPlanningLoaded] = usePersistentState("gt_weekly_planning_v1", defaultWeeklyPlanning());
   const setDayProgram = (dayKey, programId) => setWeeklyPlanning((p) => ({ ...p, [dayKey]: programId }));
 
+  // Section "Physique" : photos de progression (image en base64 — pas de backend, donc
+  // stockées directement ; attention à la taille pour ne pas saturer le stockage local) et
+  // historique des mensurations, chacune datée.
+  const [progressPhotos, setProgressPhotos, progressPhotosLoaded] = usePersistentState("gt_progress_photos_v1", []);
+  const [measurements, setMeasurements, measurementsLoaded] = usePersistentState("gt_measurements_v1", []);
+
   // Navigation : seulement 4 onglets. Le sous-détail (programme ouvert, séance ouverte...)
   // vit désormais localement DANS chaque écran concerné (ex: ProfileHub), plus au niveau App.
   const [tab, setTab] = useState("dashboard"); // 'dashboard' | 'workout' | 'progress' | 'profile'
@@ -799,7 +883,8 @@ export default function App() {
   const [sessionStatus, setSessionStatus] = useState(null);
 
   const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded
-    && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded && weeklyPlanningLoaded;
+    && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded && weeklyPlanningLoaded
+    && progressPhotosLoaded && measurementsLoaded;
 
   // Sécurité : force une sauvegarde immédiate de la séance active juste avant que
   // l'utilisateur ne quitte/ferme/rafraîchisse la page, plutôt que d'attendre le debounce.
@@ -948,10 +1033,13 @@ export default function App() {
                   caloriesLog={caloriesLog} setCaloriesLog={setCaloriesLog}
                   nutritionAdjustments={nutritionAdjustments} setNutritionAdjustments={setNutritionAdjustments}
                   weeklyPlanning={weeklyPlanning} setDayProgram={setDayProgram}
+                  progressPhotos={progressPhotos} setProgressPhotos={setProgressPhotos}
+                  measurements={measurements} setMeasurements={setMeasurements}
                   onStartProgram={startWorkout}
                   onExport={() => exportBackup({
                     programs, sessions, weightEntries, settings, userProfile,
                     nutritionProfile, caloriesLog, nutritionAdjustments, weeklyPlanning,
+                    measurements, progressPhotos,
                   })}
                   onImport={(data) => {
                     if (data.programs) setPrograms(data.programs);
@@ -963,6 +1051,8 @@ export default function App() {
                     if (data.caloriesLog) setCaloriesLog(data.caloriesLog);
                     if (data.nutritionAdjustments) setNutritionAdjustments(data.nutritionAdjustments);
                     if (data.weeklyPlanning) setWeeklyPlanning(data.weeklyPlanning);
+                    if (data.measurements) setMeasurements(data.measurements);
+                    if (data.progressPhotos) setProgressPhotos(data.progressPhotos);
                   }}
                 />
               )}
@@ -1096,6 +1186,383 @@ function exportBackup(data) {
   a.href = url; a.download = `muscu-app-backup-${todayISO()}.json`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/* ============================== EXPORT COMPLET DES DONNÉES ============================== */
+// Moteur derrière le bouton "Exporter mes données" (Profil, en haut à droite) : choix
+// d'une période + d'un format, puis génération du fichier correspondant. Entièrement
+// séparé de `exportBackup` ci-dessus (la sauvegarde simple existante, utilisée dans
+// Statistiques) — aucune des deux fonctionnalités ne touche à l'autre.
+
+const EXPORT_PERIODS = [
+  { id: "week", label: "Cette semaine" },
+  { id: "30d", label: "30 derniers jours" },
+  { id: "3m", label: "3 derniers mois" },
+  { id: "6m", label: "6 derniers mois" },
+  { id: "year", label: "Cette année" },
+  { id: "all", label: "Depuis le début" },
+  { id: "custom", label: "Période personnalisée" },
+];
+const EXPORT_FORMATS = [
+  { id: "pdf", label: "PDF", desc: "Rapport complet et lisible", icon: FileText },
+  { id: "xlsx", label: "Excel", desc: "Feuilles de calcul (.xlsx)", icon: FileSpreadsheet },
+  { id: "csv", label: "CSV", desc: "Tableau simple, universel", icon: FileDown },
+  { id: "json", label: "JSON", desc: "Pour sauvegarde/restauration", icon: FileJson },
+];
+
+function addDaysISO(days) { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); }
+function addMonthsISO(months) { const d = new Date(); d.setMonth(d.getMonth() + months); return d.toISOString().slice(0, 10); }
+
+function resolveExportPeriod(periodId, customStart, customEnd) {
+  const end = periodId === "custom" ? (customEnd || todayISO()) : todayISO();
+  let start;
+  if (periodId === "week") start = addDaysISO(-7);
+  else if (periodId === "30d") start = addDaysISO(-30);
+  else if (periodId === "3m") start = addMonthsISO(-3);
+  else if (periodId === "6m") start = addMonthsISO(-6);
+  else if (periodId === "year") start = `${new Date().getFullYear()}-01-01`;
+  else if (periodId === "custom") start = customStart || "2000-01-01";
+  else start = "2000-01-01"; // 'all'
+  return { start, end };
+}
+
+// Rassemble et filtre toutes les catégories de données sur la période choisie. Les photos
+// de progression sont volontairement exclues (base64 potentiellement lourd, hors de propos
+// pour un export PDF/Excel/CSV) — elles restent disponibles via "Sauvegarde complète".
+function gatherExportData(all, periodId, customStart, customEnd) {
+  const { start, end } = resolveExportPeriod(periodId, customStart, customEnd);
+  const inRange = (d) => d >= start && d <= end;
+  const sessions = all.sessions.filter((s) => inRange(s.date));
+  const weightEntries = all.weightEntries.filter((e) => inRange(e.date));
+  const measurements = all.measurements.filter((m) => inRange(m.date));
+  const caloriesLog = all.caloriesLog.filter((c) => inRange(c.date));
+
+  return {
+    period: { start, end, label: EXPORT_PERIODS.find((p) => p.id === periodId)?.label || periodId },
+    programs: all.programs,
+    sessions, weightEntries, measurements, caloriesLog,
+    settings: all.settings, userProfile: all.userProfile, nutritionProfile: all.nutritionProfile,
+    weeklyPlanning: all.weeklyPlanning,
+    prs: computePRs(sessions),
+    // Le streak se calcule toujours sur TOUT l'historique (une série de jours consécutifs
+    // n'a pas de sens limitée à la fenêtre choisie) — jamais filtré par période.
+    dayStreak: computeDayStreak(all.sessions),
+    weekStreak: computeWeeklyStreak(all.sessions, all.weeklyPlanning),
+    totalTonnage: sessions.reduce((a, s) => a + (s.tonnage || 0), 0),
+    totalSets: sessions.reduce((a, s) => a + (s.totalSets || 0), 0),
+  };
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// --- CSV : un seul fichier, sections successives séparées par un titre "## ..." ---------
+function toCsvValue(v) {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function rowsToCsv(headers, rows) {
+  return [headers.join(";"), ...rows.map((r) => r.map(toCsvValue).join(";"))].join("\n");
+}
+function buildExerciseRows(sessions) {
+  const rows = [];
+  sessions.forEach((s) => s.exerciseLogs.forEach((el) => {
+    el.sets.forEach((set, i) => {
+      if (set.leftWeight != null || set.rightWeight != null) {
+        rows.push([s.date, el.name, i + 1, "Gauche", set.leftWeight || "", set.leftReps || "", set.done ? "Oui" : "Non"]);
+        rows.push([s.date, el.name, i + 1, "Droit", set.rightWeight || "", set.rightReps || "", set.done ? "Oui" : "Non"]);
+      } else {
+        rows.push([s.date, el.name, i + 1, "", set.weight || "", set.reps || "", set.done ? "Oui" : "Non"]);
+      }
+    });
+  }));
+  return rows;
+}
+function generateCSVExport(data) {
+  const sections = [
+    "## SÉANCES",
+    rowsToCsv(["Date", "Programme", "Durée (min)", "Séries", "Tonnage (kg)"],
+      data.sessions.map((s) => [s.date, s.programName, Math.round((s.durationSec || 0) / 60), s.totalSets, Math.round(s.tonnage || 0)])),
+    "",
+    "## EXERCICES (détail des séries)",
+    rowsToCsv(["Date", "Exercice", "Série", "Côté", "Poids (kg)", "Reps", "Terminée"], buildExerciseRows(data.sessions)),
+    "",
+    "## CARDIO",
+    rowsToCsv(["Date", "Type", "Durée (min)", "Distance", "Calories", "Intensité"],
+      data.sessions.filter((s) => s.cardio).map((s) => [s.date, s.cardio.type, s.cardio.durationMin, s.cardio.distance || "", s.cardio.calories || "", s.cardio.intensity])),
+    "",
+    "## POIDS",
+    rowsToCsv(["Date", "Poids (kg)"], data.weightEntries.map((e) => [e.date, e.weight])),
+    "",
+    "## MENSURATIONS",
+    rowsToCsv(["Date", ...MEASUREMENT_FIELDS.map((f) => f.label)], data.measurements.map((m) => [m.date, ...MEASUREMENT_FIELDS.map((f) => m.values[f.key] || "")])),
+    "",
+    "## NUTRITION (calories saisies)",
+    rowsToCsv(["Date", "Calories consommées"], data.caloriesLog.map((c) => [c.date, c.calories])),
+    "",
+    "## RECORDS PERSONNELS",
+    rowsToCsv(["Exercice", "Charge max (kg)", "Répétitions", "1RM estimé", "Date"],
+      Object.entries(data.prs).map(([name, pr]) => [name, pr.maxWeight, pr.maxWeightReps, pr.est1RM, pr.date])),
+  ];
+  triggerDownload(new Blob([sections.join("\n")], { type: "text/csv;charset=utf-8" }), `export-${data.period.start}_${data.period.end}.csv`);
+}
+
+// --- JSON : snapshot structuré de la période, prêt à être relu (pas la sauvegarde 100%) -
+function generateJSONExport(data) {
+  triggerDownload(
+    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
+    `export-${data.period.start}_${data.period.end}.json`
+  );
+}
+
+// --- Excel (SheetJS) : une feuille par catégorie -----------------------------------------
+async function generateXLSXExport(data) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  const addSheet = (name, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name);
+
+  addSheet("Résumé", [
+    ["Période", `${data.period.start} → ${data.period.end}`],
+    ["Séances réalisées", data.sessions.length],
+    ["Tonnage total (kg)", Math.round(data.totalTonnage)],
+    ["Séries totales", data.totalSets],
+    ["Streak actuel (jours)", data.dayStreak.current],
+    ["Meilleur streak (jours)", data.dayStreak.best],
+    ["Semaines d'objectif atteint", data.weekStreak],
+  ]);
+  addSheet("Séances", [
+    ["Date", "Programme", "Durée (min)", "Séries", "Tonnage (kg)"],
+    ...data.sessions.map((s) => [s.date, s.programName, Math.round((s.durationSec || 0) / 60), s.totalSets, Math.round(s.tonnage || 0)]),
+  ]);
+  addSheet("Exercices", [["Date", "Exercice", "Série", "Côté", "Poids (kg)", "Reps", "Terminée"], ...buildExerciseRows(data.sessions)]);
+  addSheet("Cardio", [
+    ["Date", "Type", "Durée (min)", "Distance", "Calories", "Intensité"],
+    ...data.sessions.filter((s) => s.cardio).map((s) => [s.date, s.cardio.type, s.cardio.durationMin, s.cardio.distance || "", s.cardio.calories || "", s.cardio.intensity]),
+  ]);
+  addSheet("Poids", [["Date", "Poids (kg)"], ...data.weightEntries.map((e) => [e.date, e.weight])]);
+  addSheet("Mensurations", [
+    ["Date", ...MEASUREMENT_FIELDS.map((f) => f.label)],
+    ...data.measurements.map((m) => [m.date, ...MEASUREMENT_FIELDS.map((f) => m.values[f.key] || "")]),
+  ]);
+  addSheet("Nutrition", [["Date", "Calories consommées"], ...data.caloriesLog.map((c) => [c.date, c.calories])]);
+  addSheet("Records", [
+    ["Exercice", "Charge max (kg)", "Répétitions", "1RM estimé", "Date"],
+    ...Object.entries(data.prs).map(([name, pr]) => [name, pr.maxWeight, pr.maxWeightReps, pr.est1RM, pr.date]),
+  ]);
+
+  XLSX.writeFile(wb, `export-${data.period.start}_${data.period.end}.xlsx`);
+}
+
+// --- PDF (jsPDF + autoTable) : rapport structuré, une section par catégorie -------------
+async function generatePDFExport(data) {
+  const { jsPDF } = await import("jspdf");
+  await import("jspdf-autotable");
+  const doc = new jsPDF();
+  const marginX = 14;
+  let y = 18;
+
+  const ensureSpace = (needed) => {
+    if (y + needed > 280) { doc.addPage(); y = 18; }
+  };
+  const sectionTitle = (title) => {
+    ensureSpace(14);
+    doc.setFontSize(13); doc.setFont(undefined, "bold");
+    doc.text(title, marginX, y);
+    doc.setFont(undefined, "normal");
+    y += 6;
+  };
+  const table = (head, body) => {
+    doc.autoTable({ startY: y, margin: { left: marginX, right: marginX }, head: [head], body, styles: { fontSize: 8 }, headStyles: { fillColor: [255, 90, 54] } });
+    y = doc.lastAutoTable.finalY + 8;
+  };
+
+  doc.setFontSize(20); doc.setFont(undefined, "bold");
+  doc.text("Rapport d'entraînement", marginX, y); y += 8;
+  doc.setFont(undefined, "normal"); doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`Période : ${data.period.label} (${data.period.start} → ${data.period.end})`, marginX, y);
+  doc.setTextColor(0); y += 10;
+
+  sectionTitle("Résumé de la période");
+  table(["Statistique", "Valeur"], [
+    ["Séances réalisées", String(data.sessions.length)],
+    ["Tonnage total", `${Math.round(data.totalTonnage).toLocaleString("fr-FR")} kg`],
+    ["Séries totales", String(data.totalSets)],
+    ["Streak actuel", `${data.dayStreak.current} jours`],
+    ["Meilleur streak", `${data.dayStreak.best} jours`],
+    ["Semaines d'objectif atteint", String(data.weekStreak)],
+  ]);
+
+  if (data.sessions.length) {
+    sectionTitle("Historique des séances");
+    table(["Date", "Programme", "Durée", "Séries", "Tonnage"], data.sessions.map((s) => [
+      fmtDate(s.date), s.programName, fmtDuration(s.durationSec || 0), String(s.totalSets), `${Math.round(s.tonnage || 0)} kg`,
+    ]));
+  }
+
+  const cardioSessions = data.sessions.filter((s) => s.cardio);
+  if (cardioSessions.length) {
+    sectionTitle("Cardio");
+    table(["Date", "Type", "Durée", "Distance", "Intensité"], cardioSessions.map((s) => [
+      fmtDate(s.date), CARDIO_TYPES.find((t) => t.id === s.cardio.type)?.label || s.cardio.type,
+      `${s.cardio.durationMin} min`, s.cardio.distance ? `${s.cardio.distance} km` : "—",
+      INTENSITY_LEVELS.find((i) => i.id === s.cardio.intensity)?.label || s.cardio.intensity,
+    ]));
+  }
+
+  const prEntries = Object.entries(data.prs);
+  if (prEntries.length) {
+    sectionTitle("Records personnels");
+    table(["Exercice", "Charge max", "Répétitions", "1RM estimé"], prEntries.map(([name, pr]) => [
+      name, `${pr.maxWeight} kg`, String(pr.maxWeightReps), `${pr.est1RM} kg`,
+    ]));
+  }
+
+  if (data.weightEntries.length) {
+    sectionTitle("Historique du poids");
+    table(["Date", "Poids"], data.weightEntries.map((e) => [fmtDate(e.date), `${fmtWeight(e.weight)} kg`]));
+  }
+
+  if (data.measurements.length) {
+    sectionTitle("Mensurations");
+    table(["Date", ...MEASUREMENT_FIELDS.map((f) => f.label)], data.measurements.map((m) => [
+      fmtDate(m.date), ...MEASUREMENT_FIELDS.map((f) => (m.values[f.key] ? `${m.values[f.key]}cm` : "—")),
+    ]));
+  }
+
+  if (data.caloriesLog.length) {
+    sectionTitle("Nutrition");
+    table(["Date", "Calories consommées"], data.caloriesLog.map((c) => [fmtDate(c.date), `${c.calories} kcal`]));
+  }
+
+  sectionTitle("Objectif nutritionnel actuel");
+  table(["Champ", "Valeur"], [
+    ["Objectif", data.nutritionProfile?.goal === "cut" ? "Sèche" : data.nutritionProfile?.goal === "bulk" ? "Prise de masse" : "Maintien"],
+    ["Poids cible", data.nutritionProfile?.weightTarget ? `${data.nutritionProfile.weightTarget} kg` : "Non renseigné"],
+  ]);
+
+  doc.save(`rapport-${data.period.start}_${data.period.end}.pdf`);
+}
+
+async function runExport(all, { periodId, customStart, customEnd, format }) {
+  const data = gatherExportData(all, periodId, customStart, customEnd);
+  if (format === "csv") generateCSVExport(data);
+  else if (format === "json") generateJSONExport(data);
+  else if (format === "xlsx") await generateXLSXExport(data);
+  else if (format === "pdf") await generatePDFExport(data);
+}
+
+// --- Sauvegarde complète : 100 % des données, structure prête pour une future restauration
+const FULL_BACKUP_SCHEMA_VERSION = 1;
+function buildFullBackup(all) {
+  return {
+    backupSchemaVersion: FULL_BACKUP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    programs: all.programs, sessions: all.sessions, weightEntries: all.weightEntries,
+    settings: all.settings, userProfile: all.userProfile,
+    nutritionProfile: all.nutritionProfile, caloriesLog: all.caloriesLog, nutritionAdjustments: all.nutritionAdjustments,
+    weeklyPlanning: all.weeklyPlanning, measurements: all.measurements, progressPhotos: all.progressPhotos,
+  };
+}
+function downloadFullBackup(all) {
+  triggerDownload(
+    new Blob([JSON.stringify(buildFullBackup(all), null, 2)], { type: "application/json" }),
+    `muscu-app-sauvegarde-complete-${todayISO()}.json`
+  );
+}
+
+function ExportDataSheet({ theme, onClose, onExport, onFullBackup }) {
+  const [periodId, setPeriodId] = useState("30d");
+  const [customStart, setCustomStart] = useState(todayISO());
+  const [customEnd, setCustomEnd] = useState(todayISO());
+  const [format, setFormat] = useState("pdf");
+  const [exporting, setExporting] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+  const { height: viewportHeight } = useVisualViewport();
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await onExport({ periodId, customStart, customEnd, format });
+      onClose();
+    } finally {
+      setExporting(false);
+    }
+  };
+  const handleBackup = () => {
+    setBackingUp(true);
+    try { onFullBackup(); } finally { setBackingUp(false); onClose(); }
+  };
+
+  return (
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1">Exporter mes données</h3>
+        <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Choisis une période et un format, puis génère le fichier.</p>
+
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Période</p>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {EXPORT_PERIODS.map((p) => (
+            <Pill key={p.id} theme={theme} active={periodId === p.id} onClick={() => setPeriodId(p.id)}>{p.label}</Pill>
+          ))}
+        </div>
+        {periodId === "custom" && (
+          <div className="grid grid-cols-2 gap-2.5 mb-4">
+            <FieldRow theme={theme} label="Début">
+              <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="bg-transparent outline-none text-right" style={{ color: theme.text }} />
+            </FieldRow>
+            <FieldRow theme={theme} label="Fin">
+              <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="bg-transparent outline-none text-right" style={{ color: theme.text }} />
+            </FieldRow>
+          </div>
+        )}
+
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5 mt-1">Format</p>
+        <div className="grid grid-cols-2 gap-2 mb-5">
+          {EXPORT_FORMATS.map((f) => {
+            const FIcon = f.icon;
+            const active = format === f.id;
+            return (
+              <button
+                key={f.id} onClick={() => setFormat(f.id)}
+                className="rounded-2xl p-3 text-left active:scale-[0.98] transition-transform"
+                style={{ background: active ? `${theme.accent}14` : theme.card2, border: `1.5px solid ${active ? theme.accent : theme.border}` }}
+              >
+                <FIcon size={18} color={active ? theme.accent : theme.textMuted} className="mb-1.5" />
+                <p style={{ color: theme.text }} className="text-[13px] font-bold">{f.label}</p>
+                <p style={{ color: theme.textFaint }} className="text-[10.5px] leading-tight mt-0.5">{f.desc}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <BigButton theme={theme} gradient disabled={exporting} onClick={handleExport}>
+          {exporting ? "Génération..." : <><Download size={16} /> Exporter</>}
+        </BigButton>
+
+        <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${theme.border}` }}>
+          <p style={{ color: theme.textMuted }} className="text-[12px] mb-2.5">
+            Sauvegarde complète : 100 % de tes données (y compris les photos), pour restaurer sur un autre appareil ou après une réinstallation.
+          </p>
+          <BigButton theme={theme} disabled={backingUp} onClick={handleBackup}>
+            <Save size={16} /> Créer une sauvegarde complète de mon profil
+          </BigButton>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
 }
 
 /* ============================== TOP BAR & NAV ============================== */
@@ -1268,13 +1735,13 @@ function SubPageHeader({ theme, title, onBack }) {
 // avoir les deux était le doublon signalé (voir l'explication dans la conversation).
 const PROFILE_MENU_ITEMS = [
   { id: "weight", view: "weight", icon: Scale, label: "Poids", desc: "Poids actuel, évolution, ajout, historique" },
-  { id: "planning", view: "planning", icon: Calendar, label: "Planning hebdomadaire", desc: "Associe un programme à chaque jour de la semaine" },
+  { id: "physique", view: "physique", icon: Camera, label: "Physique", desc: "Photos de progression, mensurations" },
+  { id: "planning", view: "planning", icon: Calendar, label: "Calendrier", desc: "Planning de la semaine, calendrier mensuel, streak" },
+  { id: "simulation", view: "simulation", icon: Rocket, label: "Simulation de progression", desc: "Estime le temps pour atteindre un objectif", premium: true },
   { id: "nutrition", view: "nutrition", icon: Utensils, label: "Objectifs nutritionnels", desc: "Calories, macros, coach adaptatif" },
-  { id: "progress", view: "progress", icon: TrendingUp, label: "Progression", desc: "Graphiques, charges, évolution des performances" },
+  { id: "performances", view: "performances", icon: TrendingUp, label: "Performances", desc: "Progression, records personnels, statistiques" },
   { id: "history", view: "history", icon: HistoryIcon, label: "Historique séances", desc: "Revoir toutes tes séances passées" },
-  { id: "records", view: "records", icon: Trophy, label: "Records", desc: "Tes meilleures charges par exercice" },
   { id: "settings", view: "settings", icon: Settings, label: "Paramètres", desc: "Thème, repos par défaut" },
-  { id: "stats", view: "stats", icon: BarChart3, label: "Statistiques détaillées", desc: "Totaux, fréquence, heatmap, sauvegarde" },
   { id: "programs", view: "programs", icon: Dumbbell, label: "Mes programmes", desc: "Créer, modifier, organiser tes séances" },
 ];
 
@@ -1334,7 +1801,14 @@ function ProfileMenu({ theme, userProfile, onSelect, onOpenProfile }) {
           <Card theme={theme} className="p-4 flex items-center gap-3">
             <IconBadge theme={theme} icon={it.icon} size={40} iconSize={18} filled />
             <div className="flex-1 min-w-0">
-              <p style={{ color: theme.text }} className="font-bold text-[15px]">{it.label}</p>
+              <div className="flex items-center gap-1.5">
+                <p style={{ color: theme.text }} className="font-bold text-[15px]">{it.label}</p>
+                {it.premium && (
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide" style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, color: "#fff" }}>
+                    Premium
+                  </span>
+                )}
+              </div>
               <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">{it.desc}</p>
             </div>
             <ChevronRight size={16} color={theme.textFaint} className="shrink-0" />
@@ -1498,16 +1972,393 @@ function WeeklyPlanningEditor({ theme, programs, weeklyPlanning, setDayProgram }
   );
 }
 
+// Calendrier mensuel : visualise en un coup d'œil les jours réalisés (vert), planifiés
+// (bleu) et de repos (gris), avec les statistiques du mois et les indicateurs de
+// régularité (streak). Vient compléter le planning hebdomadaire ci-dessus.
+function MonthlyCalendarSection({ theme, sessions, weeklyPlanning }) {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const base = useMemo(() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + monthOffset); return d; }, [monthOffset]);
+  const year = base.getFullYear(), month = base.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startOffset = (new Date(year, month, 1).getDay() + 6) % 7; // lundi = 0
+
+  const sessionDates = useMemo(() => new Set(sessions.map((s) => s.date)), [sessions]);
+  const isoFor = (d) => { const dt = new Date(year, month, d); const off = dt.getTimezoneOffset(); return new Date(dt.getTime() - off * 60000).toISOString().slice(0, 10); };
+  const dayKeyFor = (d) => WEEK_DAYS[(new Date(year, month, d).getDay() + 6) % 7].key;
+
+  let realisees = 0, planifieesCount = 0, joursEntrainement = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const hasSession = sessionDates.has(isoFor(d));
+    const isPlannedDay = !!weeklyPlanning[dayKeyFor(d)];
+    if (hasSession) realisees += 1;
+    if (isPlannedDay) planifieesCount += 1;
+    if (hasSession || isPlannedDay) joursEntrainement += 1;
+  }
+  const joursRepos = daysInMonth - joursEntrainement;
+  const tauxRealisation = planifieesCount > 0 ? Math.round((realisees / planifieesCount) * 100) : null;
+
+  const dayStreak = useMemo(() => computeDayStreak(sessions), [sessions]);
+  const weekStreak = useMemo(() => computeWeeklyStreak(sessions, weeklyPlanning), [sessions, weeklyPlanning]);
+
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return (
+    <div className="px-4 pt-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide">Calendrier des séances</p>
+        <div className="flex items-center gap-1">
+          <IconButton theme={theme} onClick={() => setMonthOffset((m) => m - 1)}><ChevronLeft size={15} color={theme.text} /></IconButton>
+          <p style={{ color: theme.text }} className="text-[13px] font-bold w-28 text-center capitalize">{base.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}</p>
+          <IconButton theme={theme} onClick={() => setMonthOffset((m) => m + 1)}><ChevronRight size={15} color={theme.text} /></IconButton>
+        </div>
+      </div>
+
+      <Card theme={theme} className="p-3">
+        <div className="grid grid-cols-7 gap-1 mb-1.5">
+          {WEEK_DAYS.map((d) => <p key={d.key} style={{ color: theme.textFaint }} className="text-[10px] font-bold text-center uppercase">{d.short}</p>)}
+        </div>
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((d, i) => {
+            if (d === null) return <div key={i} />;
+            const hasSession = sessionDates.has(isoFor(d));
+            const isPlannedDay = !!weeklyPlanning[dayKeyFor(d)];
+            const isToday = isoFor(d) === todayISO();
+            const color = hasSession ? theme.good : isPlannedDay ? theme.accent : theme.textFaint;
+            return (
+              <div
+                key={i} className="aspect-square rounded-lg flex items-center justify-center"
+                style={{ background: hasSession || isPlannedDay ? `${color}22` : theme.card2, border: isToday ? `1.5px solid ${theme.text}` : "1px solid transparent" }}
+              >
+                <span className="text-[11px] font-semibold" style={{ color }}>{d}</span>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <div className="flex items-center gap-4 px-1 flex-wrap">
+        <div className="flex items-center gap-1.5"><div className="rounded-full" style={{ width: 8, height: 8, background: theme.good }} /><span className="text-[11px]" style={{ color: theme.textMuted }}>Réalisée</span></div>
+        <div className="flex items-center gap-1.5"><div className="rounded-full" style={{ width: 8, height: 8, background: theme.accent }} /><span className="text-[11px]" style={{ color: theme.textMuted }}>Planifiée</span></div>
+        <div className="flex items-center gap-1.5"><div className="rounded-full" style={{ width: 8, height: 8, background: theme.textFaint }} /><span className="text-[11px]" style={{ color: theme.textMuted }}>Repos</span></div>
+      </div>
+
+      <div>
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide mb-2 px-1">Statistiques du mois</p>
+        <div className="grid grid-cols-2 gap-2.5">
+          <Card theme={theme} className="p-3.5"><p style={{ color: theme.text }} className="text-[20px] font-extrabold">{realisees}</p><p style={{ color: theme.textMuted }} className="text-[11px]">Séances réalisées</p></Card>
+          <Card theme={theme} className="p-3.5"><p style={{ color: theme.text }} className="text-[20px] font-extrabold">{planifieesCount}</p><p style={{ color: theme.textMuted }} className="text-[11px]">Séances planifiées</p></Card>
+          <Card theme={theme} className="p-3.5"><p style={{ color: theme.text }} className="text-[20px] font-extrabold">{joursEntrainement}</p><p style={{ color: theme.textMuted }} className="text-[11px]">Jours d'entraînement</p></Card>
+          <Card theme={theme} className="p-3.5"><p style={{ color: theme.text }} className="text-[20px] font-extrabold">{joursRepos}</p><p style={{ color: theme.textMuted }} className="text-[11px]">Jours de repos</p></Card>
+        </div>
+      </div>
+
+      <Card theme={theme} className="p-4">
+        <div className="flex items-center justify-between mb-1.5">
+          <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Taux de réalisation</p>
+          <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{tauxRealisation != null ? `${tauxRealisation}%` : "—"}</p>
+        </div>
+        <div className="rounded-full overflow-hidden" style={{ height: 8, background: theme.card2 }}>
+          <div style={{ height: "100%", width: `${Math.min(100, tauxRealisation || 0)}%`, background: `linear-gradient(90deg, ${theme.accent}, ${theme.accent2})`, transition: "width 0.4s" }} />
+        </div>
+      </Card>
+
+      <div>
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide mb-2 px-1">Régularité</p>
+        <div className="grid grid-cols-3 gap-2.5">
+          <Card theme={theme} className="p-3.5 text-center">
+            <Flame size={16} color={theme.accent} className="mx-auto mb-1" />
+            <p style={{ color: theme.text }} className="text-[18px] font-extrabold">{dayStreak.current}</p>
+            <p style={{ color: theme.textMuted }} className="text-[10px] leading-tight">jours de suite</p>
+          </Card>
+          <Card theme={theme} className="p-3.5 text-center">
+            <Trophy size={16} color={theme.accent2} className="mx-auto mb-1" />
+            <p style={{ color: theme.text }} className="text-[18px] font-extrabold">{dayStreak.best}</p>
+            <p style={{ color: theme.textMuted }} className="text-[10px] leading-tight">record de jours</p>
+          </Card>
+          <Card theme={theme} className="p-3.5 text-center">
+            <Check size={16} color={theme.good} className="mx-auto mb-1" />
+            <p style={{ color: theme.text }} className="text-[18px] font-extrabold">{weekStreak}</p>
+            <p style={{ color: theme.textMuted }} className="text-[10px] leading-tight">semaines d'objectif</p>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== PHYSIQUE (photos + mensurations) ============================== */
+
+const MEASUREMENT_FIELDS = [
+  { key: "arms", label: "Bras" }, { key: "forearms", label: "Avant-bras" },
+  { key: "shoulders", label: "Épaules" }, { key: "chest", label: "Poitrine" },
+  { key: "waist", label: "Taille" }, { key: "hips", label: "Hanches" },
+  { key: "thighs", label: "Cuisses" }, { key: "calves", label: "Mollets" },
+  { key: "neck", label: "Cou" },
+];
+
+function PhysiqueHub({ theme, photos, setPhotos, measurements, setMeasurements }) {
+  const [tab, setTab] = useState("photos"); // 'photos' | 'measurements'
+  return (
+    <div className="px-4 pt-2">
+      <div className="flex gap-2 mb-4">
+        <Pill theme={theme} active={tab === "photos"} onClick={() => setTab("photos")}>Photos</Pill>
+        <Pill theme={theme} active={tab === "measurements"} onClick={() => setTab("measurements")}>Mensurations</Pill>
+      </div>
+      {tab === "photos" ? (
+        <ProgressPhotosSection theme={theme} photos={photos} setPhotos={setPhotos} />
+      ) : (
+        <MeasurementsSection theme={theme} measurements={measurements} setMeasurements={setMeasurements} />
+      )}
+    </div>
+  );
+}
+
+// --- Photos de progression : import multiple, tri chronologique, comparaison avant/après --
+function ProgressPhotosSection({ theme, photos, setPhotos }) {
+  const fileInputRef = useRef(null);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareIds, setCompareIds] = useState([null, null]);
+  const sorted = useMemo(() => [...photos].sort((a, b) => a.date.localeCompare(b.date)), [photos]);
+
+  // Les photos sont converties en base64 et stockées directement (pas de backend) — voir
+  // l'avertissement affiché à l'utilisateur sur la taille du stockage local.
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files || []);
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setPhotos((list) => [...list, { id: uid(), date: todayISO(), dataUrl: reader.result }]);
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+  const removePhoto = (id) => {
+    setPhotos((list) => list.filter((p) => p.id !== id));
+    setCompareIds((c) => c.map((x) => (x === id ? null : x)));
+  };
+  const updateDate = (id, date) => setPhotos((list) => list.map((p) => (p.id === id ? { ...p, date } : p)));
+  const pickForCompare = (id) => setCompareIds((c) => (c[0] ? [c[0], id] : [id, c[1]]));
+
+  const beforePhoto = photos.find((p) => p.id === compareIds[0]);
+  const afterPhoto = photos.find((p) => p.id === compareIds[1]);
+
+  return (
+    <div className="space-y-4">
+      <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
+      <div className="flex gap-2.5">
+        <BigButton theme={theme} gradient onClick={() => fileInputRef.current?.click()}><Plus size={16} /> Ajouter des photos</BigButton>
+        {photos.length >= 2 && (
+          <IconButton theme={theme} onClick={() => setCompareMode((v) => !v)}>
+            <Images size={17} color={compareMode ? theme.accent : theme.text} />
+          </IconButton>
+        )}
+      </div>
+      <p style={{ color: theme.textFaint }} className="text-[11px] px-1">
+        Les photos restent uniquement sur cet appareil (aucun envoi en ligne) — évite d'en ajouter un trop grand nombre, elles occupent de la place dans le stockage local.
+      </p>
+
+      {compareMode ? (
+        <div>
+          <SectionTitle theme={theme}>Comparer avant / après</SectionTitle>
+          <div className="grid grid-cols-2 gap-2.5 mb-3">
+            {[0, 1].map((slot) => {
+              const p = slot === 0 ? beforePhoto : afterPhoto;
+              return (
+                <div key={slot}>
+                  <p className="text-[11px] font-semibold mb-1.5 text-center" style={{ color: theme.textMuted }}>{slot === 0 ? "Avant" : "Après"}</p>
+                  <div className="rounded-2xl overflow-hidden flex items-center justify-center" style={{ aspectRatio: "3/4", background: theme.card2 }}>
+                    {p ? <img src={p.dataUrl} alt="" className="w-full h-full object-cover" /> : <Images size={22} color={theme.textFaint} />}
+                  </div>
+                  {p && <p className="text-[10.5px] text-center mt-1" style={{ color: theme.textFaint }}>{fmtDate(p.date)}</p>}
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ color: theme.textMuted }} className="text-[11.5px] px-1 mb-2">Choisis deux photos ci-dessous.</p>
+          <div className="flex gap-2 overflow-x-auto pb-1 pt-1" style={{ scrollbarWidth: "none" }}>
+            {sorted.map((p) => (
+              <button
+                key={p.id} onClick={() => pickForCompare(p.id)}
+                className="shrink-0 rounded-xl overflow-hidden"
+                style={{ width: 56, height: 72, border: `2px solid ${compareIds.includes(p.id) ? theme.accent : "transparent"}` }}
+              >
+                <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : sorted.length === 0 ? (
+        <Card theme={theme}><EmptyState theme={theme} icon={Images} title="Aucune photo" subtitle="Ajoute une première photo pour commencer à suivre ton évolution." /></Card>
+      ) : (
+        <div className="grid grid-cols-2 gap-2.5">
+          {[...sorted].reverse().map((p) => (
+            <Card key={p.id} theme={theme} className="overflow-hidden p-0">
+              <div style={{ aspectRatio: "3/4", background: theme.card2 }}>
+                <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+              </div>
+              <div className="p-2.5 flex items-center justify-between gap-1">
+                <input type="date" value={p.date} onChange={(e) => updateDate(p.id, e.target.value)} className="text-[11px] bg-transparent outline-none min-w-0" style={{ color: theme.text }} />
+                <button onClick={() => removePhoto(p.id)} className="shrink-0"><Trash2 size={13} color={theme.bad} /></button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Mensurations : historique daté + graphique d'évolution par mesure ------------------
+function MeasurementsSection({ theme, measurements, setMeasurements }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [selectedField, setSelectedField] = useState("arms");
+  const sorted = useMemo(() => [...measurements].sort((a, b) => a.date.localeCompare(b.date)), [measurements]);
+  const latest = sorted[sorted.length - 1];
+  const removeMeasurement = (id) => setMeasurements((list) => list.filter((m) => m.id !== id));
+
+  const chartData = sorted
+    .filter((m) => m.values[selectedField] != null && m.values[selectedField] !== "")
+    .map((m) => ({ dateLabel: fmtDate(m.date), value: Number(m.values[selectedField]) }));
+
+  return (
+    <div className="space-y-4">
+      <BigButton theme={theme} gradient onClick={() => setShowAdd(true)}><Plus size={16} /> Ajouter une mensuration</BigButton>
+
+      {latest && (
+        <div>
+          <SectionTitle theme={theme}>Dernières mesures · {fmtDate(latest.date)}</SectionTitle>
+          <div className="grid grid-cols-3 gap-2">
+            {MEASUREMENT_FIELDS.map((f) => (
+              <Card key={f.key} theme={theme} className="p-2.5 text-center">
+                <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{latest.values[f.key] || "—"}{latest.values[f.key] ? " cm" : ""}</p>
+                <p style={{ color: theme.textFaint }} className="text-[9.5px] mt-0.5">{f.label}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <SectionTitle theme={theme}>Évolution</SectionTitle>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {MEASUREMENT_FIELDS.map((f) => (
+            <Pill key={f.key} theme={theme} active={selectedField === f.key} onClick={() => setSelectedField(f.key)}>{f.label}</Pill>
+          ))}
+        </div>
+        {chartData.length < 2 ? (
+          <Card theme={theme}><EmptyState theme={theme} icon={Ruler} title="Pas assez de données" subtitle="Ajoute au moins deux mesures pour voir un graphique." /></Card>
+        ) : (
+          <ChartCard theme={theme} title={MEASUREMENT_FIELDS.find((f) => f.key === selectedField)?.label}>
+            <ResponsiveContainer width="100%" height={160}>
+              <LineChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={theme.border} vertical={false} />
+                <XAxis dataKey="dateLabel" tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} width={30} domain={["dataMin - 2", "dataMax + 2"]} />
+                <Tooltip contentStyle={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12, fontSize: 12 }} labelStyle={{ color: theme.text }} />
+                <Line type="monotone" dataKey="value" stroke={theme.accent} strokeWidth={2.5} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+      </div>
+
+      <div>
+        <SectionTitle theme={theme}>Historique</SectionTitle>
+        {sorted.length === 0 ? (
+          <Card theme={theme}><EmptyState theme={theme} icon={Ruler} title="Aucune mensuration enregistrée" /></Card>
+        ) : (
+          <div className="space-y-2">
+            {[...sorted].reverse().map((m) => (
+              <Card key={m.id} theme={theme} className="p-3.5">
+                <div className="flex items-center justify-between mb-2">
+                  <p style={{ color: theme.text }} className="font-bold text-[13.5px]">{fmtDate(m.date)}</p>
+                  <button onClick={() => removeMeasurement(m.id)}><Trash2 size={13} color={theme.bad} /></button>
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {MEASUREMENT_FIELDS.filter((f) => m.values[f.key]).map((f) => (
+                    <span key={f.key} className="text-[11.5px]" style={{ color: theme.textMuted }}>
+                      {f.label} : <b style={{ color: theme.text }}>{m.values[f.key]}cm</b>
+                    </span>
+                  ))}
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {showAdd && (
+          <AddMeasurementSheet
+            theme={theme} onClose={() => setShowAdd(false)}
+            onAdd={(entry) => { setMeasurements((list) => [...list, entry]); setShowAdd(false); }}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function AddMeasurementSheet({ theme, onClose, onAdd }) {
+  const [date, setDate] = useState(todayISO());
+  const [values, setValues] = useState({});
+  const { height: viewportHeight } = useVisualViewport();
+  const setField = (key, v) => setValues((vals) => ({ ...vals, [key]: v }));
+
+  return (
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-4">Ajouter une mensuration</h3>
+        <FieldRow theme={theme} label="Date">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent outline-none text-right" style={{ color: theme.text }} />
+        </FieldRow>
+        <div className="grid grid-cols-2 gap-2.5 mt-3 mb-5">
+          {MEASUREMENT_FIELDS.map((f) => (
+            <div key={f.key}>
+              <p style={{ color: theme.textMuted }} className="text-[11.5px] font-semibold mb-1 px-0.5">{f.label} (cm)</p>
+              <input
+                inputMode="decimal" placeholder="—" value={values[f.key] ?? ""} onChange={(e) => setField(f.key, e.target.value)}
+                className="w-full rounded-xl px-3 py-2.5 text-[14px] outline-none"
+                style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+              />
+            </div>
+          ))}
+        </div>
+        <BigButton
+          theme={theme} gradient
+          disabled={!Object.values(values).some((v) => String(v || "").trim() !== "")}
+          onClick={() => onAdd({ id: uid(), date, values })}
+        >
+          <Plus size={17} /> Enregistrer
+        </BigButton>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+
 function ProfileHub({
   theme, isDark, setIsDark, programs, setPrograms, sessions, setSessions,
   weightEntries, setWeightEntries, settings, setSettings, onStartProgram, onExport, onImport,
   userProfile, setUserProfile, onResetData,
   nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments,
   weeklyPlanning, setDayProgram,
+  progressPhotos, setProgressPhotos, measurements, setMeasurements,
 }) {
   const [view, setView] = useState(null); // null = menu racine
   const [programId, setProgramId] = useState(null);
   const [sessionId, setSessionId] = useState(null);
+  const [showExportSheet, setShowExportSheet] = useState(false);
 
   if (!view) {
     return (
@@ -1517,11 +2368,34 @@ function ProfileHub({
             <IconBadge theme={theme} icon={User} size={34} iconSize={16} filled />
             <h1 style={{ color: theme.text }} className="text-[26px] font-extrabold tracking-tight">Profil</h1>
           </div>
-          <button onClick={() => setIsDark((d) => !d)} className="active:scale-90 transition-transform rounded-full flex items-center justify-center" style={{ width: 38, height: 38, background: theme.card2, border: `1px solid ${theme.border}` }}>
-            {isDark ? <Sun size={17} color={theme.text} /> : <Moon size={17} color={theme.text} />}
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowExportSheet(true)} className="active:scale-90 transition-transform rounded-full flex items-center justify-center" style={{ width: 38, height: 38, background: theme.card2, border: `1px solid ${theme.border}` }}>
+              <Download size={16} color={theme.text} />
+            </button>
+            <button onClick={() => setIsDark((d) => !d)} className="active:scale-90 transition-transform rounded-full flex items-center justify-center" style={{ width: 38, height: 38, background: theme.card2, border: `1px solid ${theme.border}` }}>
+              {isDark ? <Sun size={17} color={theme.text} /> : <Moon size={17} color={theme.text} />}
+            </button>
+          </div>
         </div>
         <ProfileMenu theme={theme} userProfile={userProfile} onSelect={setView} onOpenProfile={() => setView("myprofile")} />
+
+        <AnimatePresence>
+          {showExportSheet && (
+            <ExportDataSheet
+              theme={theme}
+              onClose={() => setShowExportSheet(false)}
+              onExport={(opts) => runExport({
+                programs, sessions, weightEntries, measurements, caloriesLog,
+                settings, userProfile, nutritionProfile, weeklyPlanning,
+              }, opts)}
+              onFullBackup={() => downloadFullBackup({
+                programs, sessions, weightEntries, settings, userProfile,
+                nutritionProfile, caloriesLog, nutritionAdjustments, weeklyPlanning,
+                measurements, progressPhotos,
+              })}
+            />
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -1612,11 +2486,30 @@ function ProfileHub({
     );
   }
 
+  if (view === "physique") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Physique" onBack={() => setView(null)} />
+        <PhysiqueHub theme={theme} photos={progressPhotos} setPhotos={setProgressPhotos} measurements={measurements} setMeasurements={setMeasurements} />
+      </div>
+    );
+  }
+
   if (view === "planning") {
     return (
       <div>
-        <SubPageHeader theme={theme} title="Planning hebdomadaire" onBack={() => setView(null)} />
+        <SubPageHeader theme={theme} title="Calendrier" onBack={() => setView(null)} />
         <WeeklyPlanningEditor theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} setDayProgram={setDayProgram} />
+        <MonthlyCalendarSection theme={theme} sessions={sessions} weeklyPlanning={weeklyPlanning} programs={programs} />
+      </div>
+    );
+  }
+
+  if (view === "simulation") {
+    return (
+      <div>
+        <SubPageHeader theme={theme} title="Simulation de progression" onBack={() => setView(null)} />
+        <ProgressSimulationScreen theme={theme} sessions={sessions} weightEntries={weightEntries} programs={programs} />
       </div>
     );
   }
@@ -1635,29 +2528,11 @@ function ProfileHub({
     );
   }
 
-  if (view === "stats") {
+  if (view === "performances") {
     return (
       <div>
-        <SubPageHeader theme={theme} title="Statistiques détaillées" onBack={() => setView(null)} />
-        <StatsPage theme={theme} sessions={sessions} programs={programs} onExport={onExport} onImport={onImport} />
-      </div>
-    );
-  }
-
-  if (view === "progress") {
-    return (
-      <div>
-        <SubPageHeader theme={theme} title="Progression" onBack={() => setView(null)} />
-        <ProgressPage theme={theme} sessions={sessions} programs={programs} />
-      </div>
-    );
-  }
-
-  if (view === "records") {
-    return (
-      <div>
-        <SubPageHeader theme={theme} title="Records" onBack={() => setView(null)} />
-        <RecordsPage theme={theme} sessions={sessions} />
+        <SubPageHeader theme={theme} title="Performances" onBack={() => setView(null)} />
+        <PerformancesHub theme={theme} sessions={sessions} programs={programs} onExport={onExport} onImport={onImport} />
       </div>
     );
   }
@@ -4582,6 +5457,34 @@ const PERIODS = [
   { id: "1y", label: "1 an", days: 365 }, { id: "all", label: "Tout", days: null },
 ];
 
+// Regroupe Progression, Records personnels et Statistiques (auparavant trois entrées
+// séparées dans le menu Profil) en une seule section à onglets, pour alléger le Profil.
+// Chaque sous-écran (ProgressPage/RecordsPage/StatsPage) est inchangé — seule la façon d'y
+// accéder change.
+const PERFORMANCES_TABS = [
+  { id: "progress", label: "Progression" },
+  { id: "records", label: "Records" },
+  { id: "stats", label: "Statistiques" },
+];
+
+function PerformancesHub({ theme, sessions, programs, onExport, onImport }) {
+  const [tab, setTab] = useState("progress");
+  return (
+    <div>
+      <div className="px-4 pt-2 pb-1">
+        <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
+          {PERFORMANCES_TABS.map((t) => (
+            <Pill key={t.id} theme={theme} active={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</Pill>
+          ))}
+        </div>
+      </div>
+      {tab === "progress" && <ProgressPage theme={theme} sessions={sessions} programs={programs} />}
+      {tab === "records" && <RecordsPage theme={theme} sessions={sessions} />}
+      {tab === "stats" && <StatsPage theme={theme} sessions={sessions} programs={programs} onExport={onExport} onImport={onImport} />}
+    </div>
+  );
+}
+
 function ProgressPage({ theme, sessions, programs }) {
   const allExercises = useMemo(() => {
     const names = new Set();
@@ -4731,6 +5634,181 @@ function ProgressPage({ theme, sessions, programs }) {
           ))}
         </Card>
       </div>
+    </div>
+  );
+}
+
+/* ============================== SIMULATION DE PROGRESSION (Premium) ============================== */
+
+function ProgressSimulationScreen({ theme, sessions, weightEntries, programs }) {
+  const [mode, setMode] = useState("strength"); // 'strength' | 'weight'
+  return (
+    <div className="px-4 pt-2 space-y-4">
+      <div className="flex gap-2">
+        <Pill theme={theme} active={mode === "strength"} onClick={() => setMode("strength")}>Force</Pill>
+        <Pill theme={theme} active={mode === "weight"} onClick={() => setMode("weight")}>Poids corporel</Pill>
+      </div>
+      {mode === "strength" ? (
+        <StrengthSimulation theme={theme} sessions={sessions} programs={programs} />
+      ) : (
+        <WeightSimulation theme={theme} weightEntries={weightEntries} />
+      )}
+    </div>
+  );
+}
+
+function StrengthSimulation({ theme, sessions, programs }) {
+  const allExercises = useMemo(() => {
+    const names = new Set();
+    programs.forEach((p) => flattenExercises(p.blocks).forEach((e) => names.add(e.name)));
+    sessions.forEach((s) => s.exerciseLogs.forEach((e) => names.add(e.name)));
+    return Array.from(names).sort();
+  }, [programs, sessions]);
+  const [selected, setSelected] = useState(allExercises[0] || "");
+  const [target, setTarget] = useState("");
+  useEffect(() => { if (!selected && allExercises.length) setSelected(allExercises[0]); }, [allExercises, selected]);
+
+  // Charge maximale soulevée à chaque séance où cet exercice apparaît — la même logique
+  // que le graphique de Progression, réutilisée ici pour la régression.
+  const points = useMemo(() => {
+    const pts = [];
+    for (const s of [...sessions].reverse()) {
+      const el = s.exerciseLogs.find((e) => e.name === selected);
+      if (!el) continue;
+      const doneSets = el.sets.filter((x) => x.done && x.weight && x.reps);
+      if (!doneSets.length) continue;
+      const maxWeight = Math.max(...doneSets.map((x) => Number(x.weight)));
+      pts.push({ date: s.date, dateLabel: fmtDate(s.date), maxWeight });
+    }
+    return pts;
+  }, [sessions, selected]);
+
+  const targetNum = parseLocaleNumber(target);
+  const estimate = useMemo(() => {
+    if (points.length < 3 || !Number.isFinite(targetNum) || targetNum <= 0) return null;
+    const base = new Date(points[0].date).getTime();
+    const regPoints = points.map((p) => ({ x: (new Date(p.date).getTime() - base) / 86400000, y: p.maxWeight }));
+    return estimateTargetETA(regPoints, targetNum);
+  }, [points, targetNum]);
+  const currentMax = points.length ? points[points.length - 1].maxWeight : null;
+
+  if (allExercises.length === 0) {
+    return <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun exercice enregistré" subtitle="Réalise quelques séances pour pouvoir simuler ta progression." /></Card>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5 px-1">Exercice</p>
+        <div className="relative">
+          <select
+            value={selected} onChange={(e) => setSelected(e.target.value)}
+            className="w-full rounded-xl px-3.5 py-3 text-[14.5px] outline-none appearance-none"
+            style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+          >
+            {allExercises.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <ChevronDown size={16} color={theme.textFaint} className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+        </div>
+      </div>
+
+      {currentMax != null && (
+        <Card theme={theme} className="p-4">
+          <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Charge actuelle max</p>
+          <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{currentMax} kg</p>
+        </Card>
+      )}
+
+      <LabeledInput theme={theme} label="Objectif (kg)" value={target} onChange={setTarget} placeholder="Ex : 120" />
+
+      {points.length < 3 ? (
+        <Card theme={theme}><EmptyState theme={theme} icon={TrendingUp} title="Pas assez d'historique" subtitle="Il faut au moins 3 séances avec cet exercice pour estimer une progression." /></Card>
+      ) : targetNum > 0 && (
+        estimate ? (
+          <Card theme={theme} className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Date estimée</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{estimate.date.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Temps nécessaire</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">~{Math.round(estimate.days / 7)} semaines</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Progression moyenne</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{estimate.weeklyRate > 0 ? "+" : ""}{estimate.weeklyRate.toFixed(2)} kg/semaine</p>
+            </div>
+          </Card>
+        ) : (
+          <Card theme={theme}><EmptyState theme={theme} icon={Target} title="Estimation impossible" subtitle="Ta tendance actuelle stagne ou ne va pas vers cet objectif." /></Card>
+        )
+      )}
+
+      {points.length >= 2 && (
+        <ChartCard theme={theme} title="Historique de charge">
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={points} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={theme.border} vertical={false} />
+              <XAxis dataKey="dateLabel" tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} width={30} domain={["dataMin - 2", "dataMax + 2"]} />
+              <Tooltip contentStyle={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12, fontSize: 12 }} labelStyle={{ color: theme.text }} />
+              <Line type="monotone" dataKey="maxWeight" stroke={theme.accent} strokeWidth={2.5} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      <p style={{ color: theme.textFaint }} className="text-[11px] px-1">Estimation basée sur une régression linéaire de ton historique réel — une hypothèse, pas une garantie : elle suppose que ta progression continue au même rythme.</p>
+    </div>
+  );
+}
+
+function WeightSimulation({ theme, weightEntries }) {
+  const sorted = useMemo(() => [...weightEntries].sort((a, b) => a.date.localeCompare(b.date)), [weightEntries]);
+  const current = sorted.length ? sorted[sorted.length - 1].weight : null;
+  const [target, setTarget] = useState("");
+  const targetNum = parseLocaleNumber(target);
+
+  const estimate = useMemo(() => {
+    if (sorted.length < 3 || !Number.isFinite(targetNum) || targetNum <= 0) return null;
+    const base = new Date(sorted[0].date).getTime();
+    const pts = sorted.map((e) => ({ x: (new Date(e.date).getTime() - base) / 86400000, y: e.weight }));
+    return estimateTargetETA(pts, targetNum);
+  }, [sorted, targetNum]);
+
+  return (
+    <div className="space-y-4">
+      <Card theme={theme} className="p-4">
+        <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p>
+        <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{current ? `${fmtWeight(current)} kg` : "—"}</p>
+      </Card>
+
+      <LabeledInput theme={theme} label="Poids cible (kg)" value={target} onChange={setTarget} placeholder="Ex : 75" />
+
+      {sorted.length < 3 ? (
+        <Card theme={theme}><EmptyState theme={theme} icon={Scale} title="Pas assez de données" subtitle="Ajoute au moins 3 pesées (dans Poids) pour estimer ta progression." /></Card>
+      ) : targetNum > 0 && (
+        estimate ? (
+          <Card theme={theme} className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Date estimée</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{estimate.date.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Durée nécessaire</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">~{Math.round(estimate.days / 7)} semaines</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Rythme nécessaire</p>
+              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{estimate.weeklyRate > 0 ? "+" : ""}{fmtWeight(estimate.weeklyRate)} kg/semaine</p>
+            </div>
+          </Card>
+        ) : (
+          <Card theme={theme}><EmptyState theme={theme} icon={Target} title="Estimation impossible" subtitle="Ta tendance actuelle stagne ou ne va pas vers cet objectif." /></Card>
+        )
+      )}
+
+      <p style={{ color: theme.textFaint }} className="text-[11px] px-1">Estimation basée sur une régression linéaire de ton historique de poids réel — une hypothèse, pas une garantie.</p>
     </div>
   );
 }
