@@ -927,12 +927,14 @@ export default function App() {
               {tab === "dashboard" && (
                 <Dashboard
                   theme={theme} programs={programs} sessions={sessions} weightEntries={weightEntries}
-                  settings={settings} setSettings={setSettings} onStart={startWorkout}
-                  weeklyPlanning={weeklyPlanning} onGoToPlanning={() => setTab("profile")}
+                  onStart={startWorkout} weeklyPlanning={weeklyPlanning} onGoToPlanning={() => setTab("profile")}
                 />
               )}
               {tab === "workout" && !activeWorkout && (
-                <WorkoutStartScreen theme={theme} onGoToDashboard={() => setTab("dashboard")} />
+                <WorkoutStartScreen
+                  theme={theme} programs={programs} settings={settings} setSettings={setSettings}
+                  onStart={startWorkout} onGoToPrograms={() => setTab("profile")}
+                />
               )}
               {tab === "profile" && (
                 <ProfileHub
@@ -1200,19 +1202,52 @@ function ActiveSessionBanner({ theme, status, onTap }) {
 // Onglet "Séance" quand AUCUNE séance n'est active : ne montre jamais de liste de
 // programmes ici (ça, c'est le rôle d'Accueil). Juste un état vide qui renvoie choisir
 // une séance sur Accueil.
-function WorkoutStartScreen({ theme, onGoToDashboard }) {
+function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, onGoToPrograms }) {
+  // Reprend exactement la logique de suggestion qui vivait avant sur l'Accueil (rotation
+  // sur le dernier programme démarré), simplement déplacée ici.
+  const suggestedIndex = programs.length ? (settings.lastProgramIndex + 1) % programs.length : -1;
+  const suggested = programs[suggestedIndex] || programs[0] || null;
+  const [selectedId, setSelectedId] = useState(null);
+  const selectedProgram = programs.find((p) => p.id === selectedId) || suggested;
+
+  const handleStart = () => {
+    if (!selectedProgram) return;
+    const idx = programs.findIndex((p) => p.id === selectedProgram.id);
+    if (idx !== -1) setSettings((s) => ({ ...s, lastProgramIndex: idx }));
+    onStart(selectedProgram);
+  };
+
+  if (programs.length === 0) {
+    return (
+      <div className="px-4 pt-10">
+        <Card theme={theme} className="p-8 flex flex-col items-center text-center">
+          <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 72, height: 72, background: theme.card2 }}>
+            <Flame size={30} color={theme.textFaint} />
+          </div>
+          <p style={{ color: theme.text }} className="font-bold text-[16px] mb-1.5">Aucun programme</p>
+          <p style={{ color: theme.textMuted }} className="text-[13px] mb-6 max-w-[260px]">Crée un programme dans Profil pour pouvoir démarrer une séance.</p>
+          <BigButton theme={theme} gradient onClick={onGoToPrograms}>
+            <Dumbbell size={17} /> Créer un programme
+          </BigButton>
+        </Card>
+      </div>
+    );
+  }
+
   return (
-    <div className="px-4 pt-10">
-      <Card theme={theme} className="p-8 flex flex-col items-center text-center">
-        <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 72, height: 72, background: theme.card2 }}>
-          <Flame size={30} color={theme.textFaint} />
+    <div className="px-4 pt-2 space-y-5">
+      <div>
+        <SectionTitle theme={theme}>Choisir une séance</SectionTitle>
+        <div className="space-y-2.5">
+          {programs.map((p) => (
+            <ProgramSelectCard key={p.id} theme={theme} program={p} selected={selectedProgram?.id === p.id} onSelect={() => setSelectedId(p.id)} />
+          ))}
         </div>
-        <p style={{ color: theme.text }} className="font-bold text-[16px] mb-1.5">Aucune séance en cours</p>
-        <p style={{ color: theme.textMuted }} className="text-[13px] mb-6 max-w-[260px]">Choisis une séance sur l'écran d'accueil pour commencer à t'entraîner.</p>
-        <BigButton theme={theme} gradient onClick={onGoToDashboard}>
-          <Home size={17} /> Choisir une séance
-        </BigButton>
-      </Card>
+      </div>
+
+      <BigButton theme={theme} gradient disabled={!selectedProgram} onClick={handleStart}>
+        <Play size={18} fill="#fff" /> Commencer la séance
+      </BigButton>
     </div>
   );
 }
@@ -2314,17 +2349,9 @@ function WeeklyPlanningStrip({ theme, programs, weeklyPlanning, sessions }) {
   );
 }
 
-function Dashboard({ theme, programs, sessions, weightEntries, settings, setSettings, onStart, weeklyPlanning, onGoToPlanning }) {
+function Dashboard({ theme, programs, sessions, weightEntries, onStart, weeklyPlanning, onGoToPlanning }) {
   const prs = useMemo(() => computePRs(sessions), [sessions]);
   const lastWeight = weightEntries.length ? [...weightEntries].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
-  const suggestedIndex = programs.length ? (settings.lastProgramIndex + 1) % programs.length : -1;
-  const suggested = programs[suggestedIndex] || programs[0] || null;
-
-  // Séances disponibles (les programmes) vs. sélection en cours de constitution : ceci
-  // n'est PAS la séance active, juste "quel programme l'utilisateur s'apprête à démarrer".
-  // Tant qu'on n'a pas tapé "Commencer la séance", rien n'est démarré nulle part.
-  const [selectedId, setSelectedId] = useState(null);
-  const selectedProgram = programs.find((p) => p.id === selectedId) || suggested;
 
   const last7 = sessions.filter((s) => Date.now() - s.startedAt < 7 * 86400000);
   const tonnage7 = last7.reduce((a, s) => a + (s.tonnage || 0), 0);
@@ -2332,37 +2359,11 @@ function Dashboard({ theme, programs, sessions, weightEntries, settings, setSett
   const recentSessions = sessions.slice(0, 3);
   const topPRs = Object.entries(prs).sort((a, b) => b[1].maxWeight - a[1].maxWeight).slice(0, 3);
 
-  const handleStart = () => {
-    if (!selectedProgram) return;
-    const idx = programs.findIndex((p) => p.id === selectedProgram.id);
-    if (idx !== -1) setSettings((s) => ({ ...s, lastProgramIndex: idx }));
-    onStart(selectedProgram);
-  };
-
   return (
     <div className="px-4 pt-2 space-y-5">
       <TodaySessionCard theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} sessions={sessions} onStart={onStart} onPlanify={onGoToPlanning} />
 
       <WeeklyPlanningStrip theme={theme} programs={programs} weeklyPlanning={weeklyPlanning} sessions={sessions} />
-
-      <div>
-        <SectionTitle theme={theme}>Mes séances</SectionTitle>
-        {programs.length === 0 ? (
-          <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun programme" subtitle="Crée un programme dans Profil pour pouvoir démarrer une séance." /></Card>
-        ) : (
-          <div className="space-y-2.5">
-            {programs.map((p) => (
-              <ProgramSelectCard key={p.id} theme={theme} program={p} selected={selectedProgram?.id === p.id} onSelect={() => setSelectedId(p.id)} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {programs.length > 0 && (
-        <BigButton theme={theme} gradient disabled={!selectedProgram} onClick={handleStart}>
-          <Play size={18} fill="#fff" /> Commencer la séance
-        </BigButton>
-      )}
 
       <div className="grid grid-cols-2 gap-3">
         <Card theme={theme} className="p-4">
