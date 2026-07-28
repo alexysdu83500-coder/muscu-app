@@ -11,7 +11,7 @@ import {
   Flame, Calendar, Info, ChevronDown, RotateCcw, CheckCircle2, Circle,
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
   Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User, Lock, Zap,
-  Utensils, Beef, Wheat, Droplet, Bell, AlertTriangle, Edit3,
+  Utensils, Beef, Wheat, Droplet, Bell, AlertTriangle, Edit3, HeartPulse,
 } from "lucide-react";
 
 /* ============================== STOCKAGE (localStorage) ============================== */
@@ -1821,7 +1821,13 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
   const todayStr = todayISO();
   const todaySession = sessions.find((s) => s.date === todayStr);
   const todayStrengthKcal = todaySession ? WorkoutCalorieEstimator.estimateStrengthSessionKcal({ tonnage: todaySession.tonnage, durationSec: todaySession.durationSec, bodyWeightKg: currentWeight }) : 0;
-  const todayTotalBurn = Math.round((bmr || 0) + todayStrengthKcal + avgCardioKcal);
+  // Si un cardio a réellement été renseigné en fin de séance aujourd'hui (voir l'étape
+  // "Ajouter un cardio" dans WorkoutSession), on l'utilise à la place de la moyenne
+  // estimée à partir du profil — c'est une mesure réelle, plus fiable qu'une moyenne.
+  const todayCardioKcal = todaySession?.cardio
+    ? WorkoutCalorieEstimator.estimateCardioSessionKcal({ ...todaySession.cardio, bodyWeightKg: currentWeight })
+    : avgCardioKcal;
+  const todayTotalBurn = Math.round((bmr || 0) + todayStrengthKcal + todayCardioKcal);
 
   const todayCalorieEntry = caloriesLog.find((c) => c.date === todayStr);
   const [calInput, setCalInput] = useState(todayCalorieEntry ? String(todayCalorieEntry.calories) : "");
@@ -1910,7 +1916,7 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Métabolisme de base</span><span style={{ color: theme.text }} className="font-semibold">{bmr || 0} kcal</span></div>
           <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Séance de musculation</span><span style={{ color: theme.text }} className="font-semibold">{todayStrengthKcal} kcal</span></div>
-          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Cardio (moyenne)</span><span style={{ color: theme.text }} className="font-semibold">{avgCardioKcal} kcal</span></div>
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Cardio {todaySession?.cardio ? "(séance du jour)" : "(moyenne)"}</span><span style={{ color: theme.text }} className="font-semibold">{todayCardioKcal} kcal</span></div>
           <div className="flex items-center justify-between text-[13.5px] pt-1.5" style={{ borderTop: `1px solid ${theme.border}` }}><span style={{ color: theme.text }} className="font-bold">Total</span><span style={{ color: theme.accent }} className="font-extrabold">{todayTotalBurn} kcal</span></div>
         </div>
       </Card>
@@ -2028,6 +2034,23 @@ const EnergyCalculator = {
   },
 };
 
+// Types de cardio proposés en fin de séance, avec une valeur MET par intensité
+// (Compendium of Physical Activities) — hypothèse documentée et ajustable.
+const CARDIO_TYPES = [
+  { id: "running", label: "Course", met: { light: 7, moderate: 9.8, vigorous: 12.8 } },
+  { id: "cycling", label: "Vélo", met: { light: 4, moderate: 8, vigorous: 10 } },
+  { id: "rowing", label: "Rameur", met: { light: 3.5, moderate: 7, vigorous: 8.5 } },
+  { id: "treadmill", label: "Tapis", met: { light: 6, moderate: 8.3, vigorous: 11 } },
+  { id: "walking", label: "Marche", met: { light: 2.8, moderate: 3.8, vigorous: 5 } },
+  { id: "elliptical", label: "Elliptique", met: { light: 5, moderate: 5.5, vigorous: 8 } },
+  { id: "other", label: "Autre", met: { light: 4, moderate: 6, vigorous: 8 } },
+];
+const INTENSITY_LEVELS = [
+  { id: "light", label: "Faible" },
+  { id: "moderate", label: "Moyenne" },
+  { id: "vigorous", label: "Élevée" },
+];
+
 // --- WorkoutCalorieEstimator : calories dépensées pendant une séance --------------------
 // Basé sur des valeurs MET (Metabolic Equivalent of Task) issues du Compendium of
 // Physical Activities (Ainsworth et al.) — référence scientifique standard.
@@ -2057,9 +2080,22 @@ const WorkoutCalorieEstimator = {
     return Math.round(met * bodyWeightKg * hours);
   },
 
-  // Cardio : l'app ne journalise pas de séances cardio dédiées, donc on estime une
-  // moyenne à partir de ce que l'utilisateur a déclaré dans son profil (fréquence ×
-  // durée par semaine), lissée sur 7 jours pour le calcul du TDEE quotidien.
+  // Cardio RÉELLEMENT renseigné en fin de séance (type + durée + intensité) — remplace
+  // l'estimation moyenne ci-dessous dès qu'une entrée cardio existe pour la séance du jour.
+  // Si `calories` a été saisi manuellement par l'utilisateur, on lui fait confiance en
+  // priorité (valeur mesurée par un appareil, plus précise qu'une estimation par MET).
+  estimateCardioSessionKcal({ type, durationMin, intensity, calories, bodyWeightKg }) {
+    if (calories) return Math.round(Number(calories));
+    if (!durationMin || !bodyWeightKg) return 0;
+    const def = CARDIO_TYPES.find((c) => c.id === type) || CARDIO_TYPES.find((c) => c.id === "other");
+    const met = def.met[intensity] || def.met.moderate;
+    return Math.round(met * bodyWeightKg * (durationMin / 60));
+  },
+
+  // Cardio non renseigné : l'app estime une moyenne à partir de ce que l'utilisateur a
+  // déclaré dans son profil (fréquence × durée par semaine), lissée sur 7 jours pour le
+  // calcul du TDEE quotidien. Utilisé en repli quand aucune séance de cardio réelle n'a
+  // été enregistrée ce jour-là (voir "Dépense du jour" dans NutritionScreen).
   estimateAvgDailyCardioKcal({ cardioSessionsPerWeek, cardioDurationMin, bodyWeightKg }) {
     if (!cardioSessionsPerWeek || !cardioDurationMin || !bodyWeightKg) return 0;
     const hoursPerWeek = (cardioSessionsPerWeek * cardioDurationMin) / 60;
@@ -2300,7 +2336,7 @@ function WeeklyPlanningStrip({ theme, programs, weeklyPlanning, sessions }) {
   return (
     <div>
       <p style={{ color: theme.textMuted }} className="text-[12px] font-bold uppercase tracking-wide mb-2 px-1">Planning de la semaine</p>
-      <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-4 px-4" style={{ scrollbarWidth: "none" }}>
+      <div className="flex gap-2.5 overflow-x-auto pb-1 pt-3 -mx-4 px-4" style={{ scrollbarWidth: "none" }}>
         {WEEK_DAYS.map((d) => {
           const programId = weeklyPlanning[d.key];
           const program = programId ? programs.find((p) => p.id === programId) : null;
@@ -3657,12 +3693,22 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   // (`workout.id`) : après un rafraîchissement de page, on retombe exactement sur le même
   // exercice / la même série plutôt que de repartir de zéro.
   const [stepIndex, setStepIndex, stepIndexLoaded] = usePersistentState(`gt_step_${workout.id}`, 0);
-  const [phase, setPhase, phaseLoaded] = usePersistentState(`gt_phase_${workout.id}`, "set"); // 'set' | 'rest' | 'done'
+  const [phase, setPhase, phaseLoaded] = usePersistentState(`gt_phase_${workout.id}`, "set"); // 'set' | 'rest' | 'done' | 'absIntro' | 'postCardio' | 'postAbs'
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [lockedHint, setLockedHint] = useState(false); // message temporaire "exercice verrouillé"
   const [reorderMode, setReorderMode] = useState(false); // mode réorganisation de la suite de la séance
   const [showAddExercise, setShowAddExercise] = useState(false); // "+ Ajouter un exercice" pendant la séance
   const [pendingJump, setPendingJump] = useState(null); // blockId à activer dès que `steps` se recalcule
+
+  // Étape "Ajouter un cardio" (facultative) — après la musculation, avant la validation
+  // finale. `cardioEntry` reste `null` tant que l'utilisateur n'a pas choisi de type : la
+  // séance est enregistrée sans cardio si l'étape est passée.
+  const [cardioEntry, setCardioEntry] = useState(null);
+  // Étape "Ajouter des abdominaux" (facultative) — plusieurs exercices possibles, chacun
+  // enregistré avec la séance mais marqué `primaryMuscle: "abdominaux"` pour rester
+  // identifié comme tel dans l'historique et les statistiques.
+  const [extraAbsExercises, setExtraAbsExercises] = useState([]);
+  const [absDraft, setAbsDraft] = useState({ name: "", series: 3, reps: 15, unit: "reps" });
 
   // Tant que la position exacte dans la séance (étape, phase, minuteur de repos) n'a pas
   // fini d'être restaurée depuis le stockage, on affiche un petit chargement plutôt que de
@@ -3891,15 +3937,35 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
 
   const finishWorkout = () => {
     const durationSec = Math.floor((Date.now() - workout.startedAt) / 1000);
+    // Chaque exercice abdos ajouté en fin de séance devient un exerciseLog normal, marqué
+    // `primaryMuscle: "abdominaux"` et `isExtraAbs: true` (pour le distinguer d'un exercice
+    // prévu au programme si besoin plus tard) — il apparaît donc dans l'historique et les
+    // statistiques comme n'importe quel autre exercice.
+    const extraAbsLogs = extraAbsExercises.map((ex) => ({
+      exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: ex.unit,
+      primaryMuscle: "abdominaux", secondaryMuscles: [], isExtraAbs: true, notes: "",
+      sets: Array.from({ length: ex.series }, () => ({ weight: "", reps: String(ex.reps), done: true })),
+    }));
     const session = {
       id: workout.id, programId: workout.programId, programName: workout.programName,
-      date: todayISO(), startedAt: workout.startedAt, durationSec, tonnage, totalSets,
+      date: todayISO(), startedAt: workout.startedAt, durationSec, tonnage, totalSets: totalSets + extraAbsLogs.reduce((a, el) => a + el.sets.length, 0),
       blocks: workout.blocks.map((b) => ({ id: b.id, restSec: b.restSec, exerciseIds: b.exerciseLogs.map((el) => el.exerciseId), isAbsBlock: !!b.isAbsBlock })),
-      exerciseLogs: workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
+      exerciseLogs: [
+        ...workout.blocks.flatMap((b) => b.exerciseLogs.map((el) => ({ ...el, sets: el.sets.filter((s) => s.done || s.weight || s.reps) }))),
+        ...extraAbsLogs,
+      ],
+      cardio: cardioEntry,
     };
     onFinish(session);
     cleanupRuntimeStorage();
   };
+
+  const addAbsExerciseDraft = () => {
+    if (!absDraft.name.trim()) return;
+    setExtraAbsExercises((list) => [...list, { id: uid(), ...absDraft, name: absDraft.name.trim() }]);
+    setAbsDraft({ name: "", series: 3, reps: 15, unit: "reps" });
+  };
+  const removeAbsExercise = (id) => setExtraAbsExercises((list) => list.filter((e) => e.id !== id));
 
   if (steps.length === 0) {
     return (
@@ -3966,7 +4032,98 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
               <p style={{ color: theme.textMuted }} className="text-[13.5px] mb-6">
                 {fmtDuration(elapsedSec)} · {totalSets} séries · {Math.round(tonnage).toLocaleString("fr-FR")} kg
               </p>
-              <BigButton theme={theme} gradient onClick={finishWorkout}><Save size={17} /> Enregistrer la séance</BigButton>
+              <BigButton theme={theme} gradient onClick={() => setPhase("postCardio")}><ChevronRight size={17} /> Continuer</BigButton>
+            </motion.div>
+          ) : phase === "postCardio" ? (
+            <motion.div key="postCardio" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="pt-4">
+              <div className="text-center mb-5">
+                <div className="rounded-full flex items-center justify-center mx-auto mb-3" style={{ width: 64, height: 64, background: `${theme.accent}1f` }}>
+                  <HeartPulse size={26} color={theme.accent} />
+                </div>
+                <h2 style={{ color: theme.text }} className="text-[19px] font-extrabold mb-1">Ajouter un cardio ?</h2>
+                <p style={{ color: theme.textMuted }} className="text-[13px]">Optionnel — une séance de cardio réalisée après la musculation.</p>
+              </div>
+              <Card theme={theme} className="p-4 space-y-3 mb-5">
+                <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Type</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {CARDIO_TYPES.map((t) => (
+                    <Pill key={t.id} theme={theme} active={cardioEntry?.type === t.id}
+                      onClick={() => setCardioEntry((c) => ({ durationMin: 20, distance: "", calories: "", intensity: "moderate", ...c, type: t.id }))}>
+                      {t.label}
+                    </Pill>
+                  ))}
+                </div>
+                {cardioEntry?.type && (
+                  <>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <MiniStepper theme={theme} label="Durée" value={cardioEntry.durationMin} step={5} suffix=" min" onChange={(v) => setCardioEntry((c) => ({ ...c, durationMin: Math.max(5, v) }))} />
+                      <LabeledInput theme={theme} label="Distance (km, optionnel)" value={cardioEntry.distance} onChange={(v) => setCardioEntry((c) => ({ ...c, distance: v }))} placeholder="Ex : 5" />
+                    </div>
+                    <LabeledInput theme={theme} label="Calories (optionnel)" value={cardioEntry.calories} onChange={(v) => setCardioEntry((c) => ({ ...c, calories: v }))} placeholder="Si connues (montre, machine...)" />
+                    <div>
+                      <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Intensité</p>
+                      <div className="flex gap-1.5">
+                        {INTENSITY_LEVELS.map((i) => (
+                          <Pill key={i.id} theme={theme} active={cardioEntry.intensity === i.id} onClick={() => setCardioEntry((c) => ({ ...c, intensity: i.id }))}>{i.label}</Pill>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </Card>
+              <div className="flex gap-2.5">
+                <BigButton theme={theme} onClick={() => { setCardioEntry(null); setPhase("postAbs"); }}>Passer</BigButton>
+                <BigButton theme={theme} gradient onClick={() => setPhase("postAbs")}><ChevronRight size={17} /> Continuer</BigButton>
+              </div>
+            </motion.div>
+          ) : phase === "postAbs" ? (
+            <motion.div key="postAbs" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="pt-4">
+              <div className="text-center mb-5">
+                <div className="rounded-full flex items-center justify-center mx-auto mb-3" style={{ width: 64, height: 64, background: `${theme.accent}1f` }}>
+                  <MuscleIllustration theme={theme} muscles="abdominaux" size={40} />
+                </div>
+                <h2 style={{ color: theme.text }} className="text-[19px] font-extrabold mb-1">Ajouter des abdominaux ?</h2>
+                <p style={{ color: theme.textMuted }} className="text-[13px]">Optionnel — un ou plusieurs exercices réalisés après la séance.</p>
+              </div>
+
+              {extraAbsExercises.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {extraAbsExercises.map((ex) => (
+                    <Card key={ex.id} theme={theme} className="p-3.5 flex items-center justify-between">
+                      <div>
+                        <p style={{ color: theme.text }} className="font-semibold text-[14px]">{ex.name}</p>
+                        <p style={{ color: theme.textMuted }} className="text-[12px]">{ex.series} × {ex.reps}{ex.unit === "sec" ? "s" : " reps"}</p>
+                      </div>
+                      <IconButton theme={theme} onClick={() => removeAbsExercise(ex.id)}><Trash2 size={14} color={theme.bad} /></IconButton>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              <Card theme={theme} className="p-4 space-y-3 mb-5">
+                <input
+                  value={absDraft.name} onChange={(e) => setAbsDraft((d) => ({ ...d, name: e.target.value }))}
+                  placeholder="Nom de l'exercice (ex : Crunch, Gainage...)"
+                  className="w-full rounded-xl px-3.5 py-3 text-[14.5px] outline-none"
+                  style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+                />
+                <div className="flex gap-2 mb-1">
+                  <Pill theme={theme} active={absDraft.unit === "reps"} onClick={() => setAbsDraft((d) => ({ ...d, unit: "reps" }))}>Répétitions</Pill>
+                  <Pill theme={theme} active={absDraft.unit === "sec"} onClick={() => setAbsDraft((d) => ({ ...d, unit: "sec" }))}>Durée (sec)</Pill>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <MiniStepper theme={theme} label="Séries" value={absDraft.series} onChange={(v) => setAbsDraft((d) => ({ ...d, series: Math.max(1, v) }))} />
+                  <MiniStepper theme={theme} label={absDraft.unit === "sec" ? "Secondes" : "Reps"} value={absDraft.reps} step={absDraft.unit === "sec" ? 5 : 1} onChange={(v) => setAbsDraft((d) => ({ ...d, reps: Math.max(1, v) }))} />
+                </div>
+                <BigButton theme={theme} disabled={!absDraft.name.trim()} onClick={addAbsExerciseDraft}>
+                  <Plus size={16} /> Ajouter cet exercice
+                </BigButton>
+              </Card>
+
+              <div className="flex gap-2.5">
+                <BigButton theme={theme} onClick={finishWorkout}>Passer et terminer</BigButton>
+                <BigButton theme={theme} gradient onClick={finishWorkout}><Save size={17} /> Terminer la séance</BigButton>
+              </div>
             </motion.div>
           ) : phase === "absIntro" ? (
             <motion.div key="absIntro" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="pt-6 text-center">
@@ -4070,7 +4227,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
       <AnimatePresence>
         {confirmEnd && (
           <ConfirmSheet theme={theme} title="Terminer la séance ?" subtitle={`${totalSets} séries · ${Math.round(tonnage).toLocaleString("fr-FR")} kg de tonnage`}
-            confirmLabel="Terminer" onConfirm={finishWorkout} onCancel={() => setConfirmEnd(false)} />
+            confirmLabel="Terminer" onConfirm={() => { setConfirmEnd(false); stopRest(); setPhase("done"); }} onCancel={() => setConfirmEnd(false)} />
         )}
       </AnimatePresence>
 
