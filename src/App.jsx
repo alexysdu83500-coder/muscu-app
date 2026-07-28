@@ -1323,7 +1323,10 @@ function generateJSONExport(data) {
 
 // --- Excel (SheetJS) : une feuille par catégorie -----------------------------------------
 async function generateXLSXExport(data) {
-  const XLSX = await import("xlsx");
+  // Chargée depuis un CDN au moment de l'export plutôt qu'installée via npm : évite tout
+  // souci de résolution au build (ex: paquet non installé) — nécessite juste une connexion
+  // internet au moment de cliquer sur "Exporter" en format Excel.
+  const XLSX = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
   const wb = XLSX.utils.book_new();
   const addSheet = (name, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name);
 
@@ -1361,8 +1364,11 @@ async function generateXLSXExport(data) {
 
 // --- PDF (jsPDF + autoTable) : rapport structuré, une section par catégorie -------------
 async function generatePDFExport(data) {
-  const { jsPDF } = await import("jspdf");
-  await import("jspdf-autotable");
+  // Chargées depuis un CDN au moment de l'export plutôt qu'installées via npm : évite tout
+  // souci de résolution au build — nécessite juste une connexion internet au moment de
+  // cliquer sur "Exporter" en format PDF.
+  const { jsPDF } = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm");
+  const { default: autoTable } = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/+esm");
   const doc = new jsPDF();
   const marginX = 14;
   let y = 18;
@@ -1378,7 +1384,7 @@ async function generatePDFExport(data) {
     y += 6;
   };
   const table = (head, body) => {
-    doc.autoTable({ startY: y, margin: { left: marginX, right: marginX }, head: [head], body, styles: { fontSize: 8 }, headStyles: { fillColor: [255, 90, 54] } });
+    autoTable(doc, { startY: y, margin: { left: marginX, right: marginX }, head: [head], body, styles: { fontSize: 8 }, headStyles: { fillColor: [255, 90, 54] } });
     y = doc.lastAutoTable.finalY + 8;
   };
 
@@ -1483,20 +1489,35 @@ function ExportDataSheet({ theme, onClose, onExport, onFullBackup }) {
   const [format, setFormat] = useState("pdf");
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [error, setError] = useState("");
   const { height: viewportHeight } = useVisualViewport();
 
   const handleExport = async () => {
     setExporting(true);
+    setError("");
     try {
       await onExport({ periodId, customStart, customEnd, format });
       onClose();
+    } catch (e) {
+      console.error("Échec de l'export :", e);
+      setError(
+        /jspdf|xlsx|import|fetch|network/i.test(String(e?.message))
+          ? "Ce format (PDF/Excel) a besoin d'une connexion internet pour charger un composant externe — vérifie ta connexion et réessaie."
+          : `Échec de l'export : ${e?.message || "erreur inconnue"}.`
+      );
     } finally {
       setExporting(false);
     }
   };
   const handleBackup = () => {
     setBackingUp(true);
-    try { onFullBackup(); } finally { setBackingUp(false); onClose(); }
+    setError("");
+    try { onFullBackup(); onClose(); } catch (e) {
+      console.error("Échec de la sauvegarde :", e);
+      setError(`Échec de la sauvegarde : ${e?.message || "erreur inconnue"}.`);
+    } finally {
+      setBackingUp(false);
+    }
   };
 
   return (
@@ -1548,6 +1569,9 @@ function ExportDataSheet({ theme, onClose, onExport, onFullBackup }) {
           })}
         </div>
 
+        {error && (
+          <p style={{ color: theme.bad }} className="text-[12.5px] font-semibold mb-3 px-1">{error}</p>
+        )}
         <BigButton theme={theme} gradient disabled={exporting} onClick={handleExport}>
           {exporting ? "Génération..." : <><Download size={16} /> Exporter</>}
         </BigButton>
