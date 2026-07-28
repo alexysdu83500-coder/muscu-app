@@ -1007,6 +1007,17 @@ function usePersistentState_simple(key, initial) {
   return [state, setAndSave];
 }
 
+// Construit le tableau de séries vierges d'un exercice au démarrage d'une séance : pour
+// un exercice unilatéral, chaque série a des champs gauche/droite entièrement séparés
+// (poids, reps) au lieu d'un seul poids/reps partagé.
+function makeEmptySets(ex) {
+  const count = ex.series || 3;
+  if (ex.unilateral) {
+    return Array.from({ length: count }, () => ({ leftWeight: "", leftReps: "", rightWeight: "", rightReps: "", done: false }));
+  }
+  return Array.from({ length: count }, () => ({ weight: "", reps: "", done: false }));
+}
+
 function makeWorkout(program) {
   const mainBlocks = (program.blocks || []).map((block) => ({
     id: uid(),
@@ -1015,11 +1026,13 @@ function makeWorkout(program) {
       exerciseId: ex.id,
       name: ex.name,
       targetReps: ex.reps,
+      targetRepsPerSet: ex.customReps ? syncRepsPerSet(ex.repsPerSet, ex.series || 3, ex.reps) : null,
       targetUnit: ex.unit || "reps",
+      unilateral: !!ex.unilateral,
       notes: ex.notes,
       primaryMuscle: ex.primaryMuscle || null,
       secondaryMuscles: ex.secondaryMuscles || [],
-      sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+      sets: makeEmptySets(ex),
     })),
   }));
   // Le bloc abdos est ajouté à la toute fin de la séance, un exercice = un bloc chacun
@@ -1030,9 +1043,11 @@ function makeWorkout(program) {
     restSec: ex.restSec || ex.rest || 45,
     isAbsBlock: true,
     exerciseLogs: [{
-      exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: ex.unit || "reps", notes: ex.notes || "",
+      exerciseId: ex.id, name: ex.name, targetReps: ex.reps,
+      targetRepsPerSet: ex.customReps ? syncRepsPerSet(ex.repsPerSet, ex.series || 3, ex.reps) : null,
+      targetUnit: ex.unit || "reps", unilateral: !!ex.unilateral, notes: ex.notes || "",
       primaryMuscle: ex.primaryMuscle || "abdominaux", secondaryMuscles: ex.secondaryMuscles || [],
-      sets: Array.from({ length: ex.series || 3 }, () => ({ weight: "", reps: "", done: false })),
+      sets: makeEmptySets(ex),
     }],
   }));
   return {
@@ -2117,18 +2132,23 @@ const WeeklyAdaptiveAlgorithm = {
 
 function computePRs(sessions) {
   const prs = {}; // name -> {maxWeight, maxWeightReps, est1RM, date}
+  const registerSide = (name, w, r, date) => {
+    if (!w || !r) return;
+    const est = epley1RM(w, r);
+    const cur = prs[name];
+    if (!cur || w > cur.maxWeight) prs[name] = { ...(cur || {}), maxWeight: w, maxWeightReps: r, date };
+    if (!prs[name].est1RM || est > prs[name].est1RM) prs[name].est1RM = est;
+  };
   for (const s of sessions) {
     for (const el of s.exerciseLogs) {
       for (const set of el.sets) {
-        if (!set.done || !set.weight || !set.reps) continue;
-        const w = Number(set.weight), r = Number(set.reps);
-        const est = epley1RM(w, r);
-        const cur = prs[el.name];
-        if (!cur || w > cur.maxWeight) {
-          prs[el.name] = { ...(cur || {}), maxWeight: w, maxWeightReps: r, date: s.date || s.startedAtISO };
-        }
-        if (!prs[el.name].est1RM || est > prs[el.name].est1RM) {
-          prs[el.name].est1RM = est;
+        if (!set.done) continue;
+        const date = s.date || s.startedAtISO;
+        if (set.leftWeight != null || set.rightWeight != null) {
+          registerSide(el.name, Number(set.leftWeight), Number(set.leftReps), date);
+          registerSide(el.name, Number(set.rightWeight), Number(set.rightReps), date);
+        } else if (set.weight && set.reps) {
+          registerSide(el.name, Number(set.weight), Number(set.reps), date);
         }
       }
     }
@@ -2689,6 +2709,14 @@ function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemov
     const cur = exercise.secondaryMuscles || [];
     onUpdate({ secondaryMuscles: cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id] });
   };
+  const onSeriesChange = (v) => onUpdate({
+    series: v,
+    repsPerSet: exercise.customReps ? syncRepsPerSet(exercise.repsPerSet, v, exercise.reps) : exercise.repsPerSet,
+  });
+  const toggleCustomReps = () => {
+    const next = !exercise.customReps;
+    onUpdate({ customReps: next, repsPerSet: next ? syncRepsPerSet(exercise.repsPerSet, exercise.series, exercise.reps) : exercise.repsPerSet });
+  };
   return (
     <Card theme={theme} className="overflow-hidden">
       <div className="flex items-center gap-2 p-3.5">
@@ -2701,7 +2729,9 @@ function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemov
         <button className="flex-1 text-left min-w-0" onClick={() => setOpen((o) => !o)}>
           <p style={{ color: theme.text }} className="font-semibold text-[14.5px] truncate">{exercise.name}</p>
           <p style={{ color: theme.textMuted }} className="text-[12px] mt-0.5">
-            {exercise.series} × {exercise.reps} reps · repos {restSec}s{exercise.primaryMuscle ? ` · ${muscleLabel(exercise.primaryMuscle)}` : ""}
+            {exercise.series} × {exercise.customReps && exercise.repsPerSet ? exercise.repsPerSet.join("/") : exercise.reps} reps · repos {restSec}s
+            {exercise.unilateral ? " · unilatéral" : ""}
+            {exercise.primaryMuscle ? ` · ${muscleLabel(exercise.primaryMuscle)}` : ""}
           </p>
         </button>
         <ChevronDown size={16} color={theme.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} onClick={() => setOpen((o) => !o)} />
@@ -2714,10 +2744,33 @@ function ExerciseRow({ theme, exercise, restSec, onUpdate, onUpdateRest, onRemov
                 <input value={exercise.name} onChange={(e) => onUpdate({ name: e.target.value })} className="bg-transparent outline-none text-right flex-1" style={{ color: theme.text }} />
               </FieldRow>
               <div className="grid grid-cols-3 gap-2">
-                <MiniStepper theme={theme} label="Séries" value={exercise.series} onChange={(v) => onUpdate({ series: v })} />
+                <MiniStepper theme={theme} label="Séries" value={exercise.series} onChange={onSeriesChange} />
                 <MiniStepper theme={theme} label="Reps" value={exercise.reps} onChange={(v) => onUpdate({ reps: v })} />
                 <MiniStepper theme={theme} label="Repos" value={restSec} step={15} onChange={onUpdateRest} suffix="s" />
               </div>
+
+              {/* Répétitions indépendantes par série (ex: pyramide 12/10/8/6). */}
+              <button onClick={toggleCustomReps} className="flex items-center gap-2">
+                <div className="rounded-md flex items-center justify-center shrink-0" style={{ width: 18, height: 18, background: exercise.customReps ? theme.accent : theme.card2, border: `1.5px solid ${exercise.customReps ? theme.accent : theme.border}` }}>
+                  {exercise.customReps && <Check size={12} color="#fff" strokeWidth={3} />}
+                </div>
+                <span style={{ color: theme.text }} className="text-[13px] font-semibold">Personnaliser les répétitions par série</span>
+              </button>
+              {exercise.customReps && (
+                <PerSetRepsEditor
+                  theme={theme} values={syncRepsPerSet(exercise.repsPerSet, exercise.series, exercise.reps)}
+                  onChange={(v) => onUpdate({ repsPerSet: v })}
+                />
+              )}
+
+              {/* Exercice unilatéral : côté gauche / droit indépendants pendant la séance. */}
+              <button onClick={() => onUpdate({ unilateral: !exercise.unilateral })} className="flex items-center gap-2">
+                <div className="rounded-md flex items-center justify-center shrink-0" style={{ width: 18, height: 18, background: exercise.unilateral ? theme.accent : theme.card2, border: `1.5px solid ${exercise.unilateral ? theme.accent : theme.border}` }}>
+                  {exercise.unilateral && <Check size={12} color="#fff" strokeWidth={3} />}
+                </div>
+                <span style={{ color: theme.text }} className="text-[13px] font-semibold">Exercice unilatéral (côté gauche / droit séparés)</span>
+              </button>
+
               <div>
                 <div className="flex items-center gap-3 mb-2">
                   {exercise.primaryMuscle && (
@@ -2896,6 +2949,44 @@ function PairExerciseSheet({ theme, title, candidates, onClose, onPickExisting, 
   );
 }
 
+// Ajuste un tableau de répétitions par série à la longueur `series` (ajoute des copies de
+// la dernière valeur si la série grandit, tronque si elle rétrécit) — utilisé partout où
+// le nombre de séries peut changer après que des répétitions par série ont été saisies.
+function syncRepsPerSet(repsPerSet, series, fallback) {
+  const base = Array.isArray(repsPerSet) && repsPerSet.length ? repsPerSet : Array.from({ length: series }, () => fallback);
+  if (base.length === series) return base;
+  if (base.length > series) return base.slice(0, series);
+  return [...base, ...Array.from({ length: series - base.length }, () => base[base.length - 1] ?? fallback)];
+}
+
+// Éditeur "répétitions indépendantes par série" (ex: pyramide 12/10/8/6) — repli discret,
+// masqué par défaut : la plupart des exercices utilisent le même nombre de reps partout.
+function PerSetRepsEditor({ theme, values, onChange }) {
+  const setAt = (i, v) => {
+    const next = [...values];
+    next[i] = Math.max(1, v);
+    onChange(next);
+  };
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {values.map((v, i) => (
+        <div key={i} className="rounded-xl p-2 flex items-center justify-between" style={{ background: theme.card2, border: `1px solid ${theme.border}` }}>
+          <span className="text-[11.5px] font-semibold" style={{ color: theme.textMuted }}>Série {i + 1}</span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setAt(i, v - 1)} className="w-6 h-6 rounded-md flex items-center justify-center active:scale-90" style={{ background: theme.bg }}>
+              <Minus size={11} color={theme.text} />
+            </button>
+            <span className="text-[13px] font-bold w-6 text-center" style={{ color: theme.text }}>{v}</span>
+            <button onClick={() => setAt(i, v + 1)} className="w-6 h-6 rounded-md flex items-center justify-center active:scale-90" style={{ background: theme.bg }}>
+              <Plus size={11} color={theme.text} />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FieldRow({ theme, label, children }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -2936,11 +3027,21 @@ function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title 
   const [rest, setRest] = useState(90);
   const [primaryMuscle, setPrimaryMuscle] = useState(defaultPrimaryMuscle);
   const [secondaryMuscles, setSecondaryMuscles] = useState([]);
+  const [unilateral, setUnilateral] = useState(false);
+  const [customReps, setCustomReps] = useState(false);
+  const [repsPerSet, setRepsPerSet] = useState(() => Array.from({ length: 4 }, () => 10));
   const filtered = name ? COMMON_EXERCISES.filter((e) => e.toLowerCase().includes(name.toLowerCase())) : COMMON_EXERCISES.slice(0, 5);
 
   const switchUnit = (u) => { setUnit(u); setReps(u === "sec" ? 30 : 10); };
   const toggleSecondary = (id) => setSecondaryMuscles((cur) => (cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]));
   const { height: viewportHeight } = useVisualViewport();
+
+  // Le nombre de séries peut changer à tout moment : on garde `repsPerSet` synchronisé
+  // (ajout/retrait d'entrées) tant que le mode personnalisé est actif.
+  useEffect(() => {
+    if (customReps) setRepsPerSet((cur) => syncRepsPerSet(cur, series, reps));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series, customReps]);
 
   return (
     <motion.div
@@ -2991,12 +3092,46 @@ function AddExerciseSheet({ theme, onClose, onAdd, allowDuration = false, title 
             )}
           </div>
         )}
-        <div className="grid grid-cols-3 gap-2 mb-5">
+        <div className="grid grid-cols-3 gap-2 mb-3">
           <MiniStepper theme={theme} label="Séries" value={series} onChange={setSeries} />
           <MiniStepper theme={theme} label={unit === "sec" ? "Secondes" : "Reps"} value={reps} step={unit === "sec" ? 10 : 1} onChange={setReps} />
           <MiniStepper theme={theme} label="Repos" value={rest} step={15} onChange={setRest} suffix="s" />
         </div>
-        <BigButton theme={theme} gradient disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), series, reps, rest, restSec: rest, unit, notes: "", primaryMuscle, secondaryMuscles })}>
+
+        {/* Répétitions indépendantes par série (ex: pyramide 12/10/8/6) — masqué par
+            défaut, la plupart des exercices utilisent le même nombre de reps partout. */}
+        <button
+          onClick={() => { const next = !customReps; setCustomReps(next); if (next) setRepsPerSet((cur) => syncRepsPerSet(cur, series, reps)); }}
+          className="flex items-center gap-2 mb-3"
+        >
+          <div className="rounded-md flex items-center justify-center shrink-0" style={{ width: 18, height: 18, background: customReps ? theme.accent : theme.card2, border: `1.5px solid ${customReps ? theme.accent : theme.border}` }}>
+            {customReps && <Check size={12} color="#fff" strokeWidth={3} />}
+          </div>
+          <span style={{ color: theme.text }} className="text-[13px] font-semibold">Personnaliser les répétitions par série</span>
+        </button>
+        {customReps && (
+          <div className="mb-3">
+            <PerSetRepsEditor theme={theme} values={syncRepsPerSet(repsPerSet, series, reps)} onChange={setRepsPerSet} />
+          </div>
+        )}
+
+        {/* Exercice unilatéral : chaque série aura une colonne Gauche et une colonne Droite
+            totalement indépendantes (poids, reps) pendant la séance. */}
+        <button onClick={() => setUnilateral((v) => !v)} className="flex items-center gap-2 mb-5">
+          <div className="rounded-md flex items-center justify-center shrink-0" style={{ width: 18, height: 18, background: unilateral ? theme.accent : theme.card2, border: `1.5px solid ${unilateral ? theme.accent : theme.border}` }}>
+            {unilateral && <Check size={12} color="#fff" strokeWidth={3} />}
+          </div>
+          <span style={{ color: theme.text }} className="text-[13px] font-semibold">Exercice unilatéral (côté gauche / droit séparés)</span>
+        </button>
+
+        <BigButton
+          theme={theme} gradient disabled={!name.trim()}
+          onClick={() => onAdd({
+            id: uid(), name: name.trim(), series, reps, rest, restSec: rest, unit, notes: "", primaryMuscle, secondaryMuscles,
+            unilateral,
+            repsPerSet: customReps ? syncRepsPerSet(repsPerSet, series, reps) : Array.from({ length: series }, () => reps),
+          })}
+        >
           <Plus size={17} /> Ajouter
         </BigButton>
       </motion.div>
@@ -3383,6 +3518,9 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
   const set = log.sets[round] || { weight: "", reps: "" };
   const totalRounds = log.sets.length;
   const isDuration = log.targetUnit === "sec";
+  // Cible de LA série en cours (pyramide 12/10/8/6 par ex.) — avant ce correctif, la puce
+  // affichait toujours `log.targetReps`, la même valeur quelle que soit la série affichée.
+  const targetForRound = log.targetRepsPerSet?.[round] ?? log.targetReps;
 
   return (
     <Card theme={theme} className="p-5">
@@ -3395,6 +3533,11 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
         {isAbs && (
           <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-flex items-center gap-1" style={{ background: `${theme.accent}1f`, color: theme.accent }}>
             <Flame size={11} /> Abdominaux
+          </span>
+        )}
+        {log.unilateral && (
+          <span className="px-2.5 py-1 rounded-full text-[10.5px] font-extrabold inline-flex items-center gap-1" style={{ background: theme.card2, color: theme.textMuted }}>
+            Unilatéral
           </span>
         )}
       </div>
@@ -3426,7 +3569,7 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
 
       <div className="flex items-center gap-2 flex-wrap mb-4">
         <span className="px-3 py-1.5 rounded-full text-[12px] font-semibold inline-flex items-center gap-1" style={{ background: theme.card2, color: theme.textMuted }}>
-          <Target size={12} /> {log.targetReps}{isDuration ? "s" : " reps"} cible
+          <Target size={12} /> {targetForRound}{isDuration ? "s" : " reps"} cible
         </span>
         {pr && (
           <span className="px-3 py-1.5 rounded-full text-[12px] font-bold flex items-center gap-1" style={{ background: `${theme.accent2}22`, color: theme.accent2 }}>
@@ -3442,15 +3585,35 @@ function ExerciseCardActive({ theme, log, groupSize, letter, exIndexInBlock, rou
         </div>
       )}
 
-      <LastSessionCard theme={theme} last={last} currentSet={{ weight: set.weight, reps: set.reps, round }} />
+      <LastSessionCard theme={theme} last={last} currentSet={{ weight: log.unilateral ? set.leftWeight : set.weight, reps: log.unilateral ? set.leftReps : set.reps, round }} />
 
-      {/* grid-cols-2 (= repeat(2, minmax(0,1fr))) donne deux colonnes strictement égales en
-          largeur, qui s'adaptent à n'importe quelle taille d'écran ; items-stretch force les
-          deux cartes à la même hauteur. Aucune largeur fixe, aucun positionnement absolu. */}
-      <div className="grid grid-cols-2 gap-3 mb-5 items-stretch">
-        <BigNumberStepper theme={theme} label="Charge (kg)" value={set.weight} onChange={(v) => onChangeSet({ weight: v })} step={2.5} />
-        <BigNumberStepper theme={theme} label={isDuration ? "Durée (sec)" : "Répétitions"} value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={isDuration ? 5 : 1} />
-      </div>
+      {log.unilateral ? (
+        <div className="space-y-3 mb-5">
+          <div>
+            <p style={{ color: theme.textMuted }} className="text-[11px] font-bold uppercase tracking-wide mb-1.5 px-0.5">Côté gauche</p>
+            <div className="grid grid-cols-2 gap-3 items-stretch">
+              <BigNumberStepper theme={theme} label="Charge (kg)" value={set.leftWeight} onChange={(v) => onChangeSet({ leftWeight: v })} step={2.5} />
+              <BigNumberStepper theme={theme} label={isDuration ? "Durée (sec)" : "Répétitions"} value={set.leftReps} onChange={(v) => onChangeSet({ leftReps: v })} step={isDuration ? 5 : 1} />
+            </div>
+          </div>
+          <div>
+            <p style={{ color: theme.textMuted }} className="text-[11px] font-bold uppercase tracking-wide mb-1.5 px-0.5">Côté droit</p>
+            <div className="grid grid-cols-2 gap-3 items-stretch">
+              <BigNumberStepper theme={theme} label="Charge (kg)" value={set.rightWeight} onChange={(v) => onChangeSet({ rightWeight: v })} step={2.5} />
+              <BigNumberStepper theme={theme} label={isDuration ? "Durée (sec)" : "Répétitions"} value={set.rightReps} onChange={(v) => onChangeSet({ rightReps: v })} step={isDuration ? 5 : 1} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        // grid-cols-2 (= repeat(2, minmax(0,1fr))) donne deux colonnes strictement égales
+        // en largeur, qui s'adaptent à n'importe quelle taille d'écran ; items-stretch
+        // force les deux cartes à la même hauteur. Aucune largeur fixe, aucun
+        // positionnement absolu.
+        <div className="grid grid-cols-2 gap-3 mb-5 items-stretch">
+          <BigNumberStepper theme={theme} label="Charge (kg)" value={set.weight} onChange={(v) => onChangeSet({ weight: v })} step={2.5} />
+          <BigNumberStepper theme={theme} label={isDuration ? "Durée (sec)" : "Répétitions"} value={set.reps} onChange={(v) => onChangeSet({ reps: v })} step={isDuration ? 5 : 1} />
+        </div>
+      )}
 
       <BigButton theme={theme} gradient onClick={onValidate}>
         <Check size={18} strokeWidth={3} /> Valider la série
@@ -3604,7 +3767,12 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   }, [lockedHint]);
 
   const allLogs = workout.blocks.flatMap((b) => b.exerciseLogs);
-  const tonnage = allLogs.reduce((a, el) => a + el.sets.reduce((b, s) => b + (s.done ? (Number(s.weight) || 0) * (Number(s.reps) || 0) : 0), 0), 0);
+  // Pour un exercice unilatéral, le tonnage d'une série est la somme des deux côtés
+  // (chacun a son propre poids × reps, totalement indépendants l'un de l'autre).
+  const setTonnage = (s) => (s.leftWeight != null || s.rightWeight != null)
+    ? (Number(s.leftWeight) || 0) * (Number(s.leftReps) || 0) + (Number(s.rightWeight) || 0) * (Number(s.rightReps) || 0)
+    : (Number(s.weight) || 0) * (Number(s.reps) || 0);
+  const tonnage = allLogs.reduce((a, el) => a + el.sets.reduce((b, s) => b + (s.done ? setTonnage(s) : 0), 0), 0);
   const totalSets = allLogs.reduce((a, el) => a + el.sets.filter((s) => s.done).length, 0);
 
   // Met à jour la série en cours (poids / reps / done) de l'étape active.
@@ -3754,13 +3922,19 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
   }
 
   return (
-    <div style={{ background: theme.bg }} className="gt-app-shell">
+    <div style={{ background: theme.bg }} className="flex flex-col gt-app-shell">
       <SessionHeader
         theme={theme} programName={workout.programName} elapsedSec={elapsedSec}
         stepNumber={Math.min(stepIndex + 1, steps.length)} totalSteps={steps.length}
         onCancel={handleCancel} onEndClick={() => setConfirmEnd(true)}
       />
 
+      {/* Avant ce correctif, ce contenu vivait directement dans `.gt-app-shell` (hauteur
+          figée + overflow:hidden, pensé pour l'enveloppe racine de l'app, pas pour une
+          zone de contenu) : tout ce qui dépassait un écran était silencieusement coupé —
+          d'où le bug "seuls deux exercices visibles". `flex-1 overflow-y-auto` en fait une
+          vraie zone de défilement indépendante, sous l'en-tête qui reste fixe. */}
+      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
       <div className="px-4 pb-8 pt-4">
         <AnimatePresence mode="wait">
           {phase === "rest" && rest ? (
@@ -3878,6 +4052,7 @@ function WorkoutSession({ workout, setWorkout, sessions, onFinish, onCancel, res
             )}
           </div>
         )}
+      </div>
       </div>
 
       <AnimatePresence>
@@ -4052,7 +4227,13 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate, onEdit }
                         {el.sets.map((s, si) => (
                           <div key={si} className="flex items-center justify-between text-[13px]" style={{ color: s.done ? theme.text : theme.textFaint }}>
                             <span>Série {si + 1}</span>
-                            <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}{el.targetUnit === "sec" ? "s" : ""}</span>
+                            {s.leftWeight != null || s.rightWeight != null ? (
+                              <span className="font-semibold text-right">
+                                G {s.leftWeight || 0}kg×{s.leftReps || 0} · D {s.rightWeight || 0}kg×{s.rightReps || 0}
+                              </span>
+                            ) : (
+                              <span className="font-semibold">{s.weight || 0} kg × {s.reps || 0}{el.targetUnit === "sec" ? "s" : ""}</span>
+                            )}
                           </div>
                         ))}
                       </div>
