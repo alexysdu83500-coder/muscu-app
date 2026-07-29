@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence, Reorder, useReducedMotion } from "framer-motion";
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell, ReferenceLine,
 } from "recharts";
 import {
   Home, Dumbbell, History as HistoryIcon, TrendingUp, Scale, BarChart3,
@@ -12,7 +12,7 @@ import {
   Target, ArrowUp, ArrowDown, Minus, Settings, FileDown, FileUp, Save,
   Link2, Unlink, Trophy, Sparkles, ArrowUpDown, User, Lock, Zap,
   Utensils, Beef, Wheat, Droplet, Bell, AlertTriangle, Edit3, HeartPulse,
-  Camera, Rocket, Images, Ruler, FileText, FileSpreadsheet, FileJson,
+  Camera, Rocket, Images, Ruler, FileText, FileSpreadsheet, FileJson, Footprints,
 } from "lucide-react";
 
 /* ============================== STOCKAGE (localStorage) ============================== */
@@ -153,6 +153,54 @@ function estimateTargetETA(points, targetY) {
   if (daysFromNow <= 0 || !isFinite(daysFromNow)) return null;
   const targetDate = new Date(Date.now() + daysFromNow * 86400000);
   return { days: Math.round(daysFromNow), date: targetDate, weeklyRate: reg.slope * 7 };
+}
+
+// Valeur projetée par la régression à N jours dans le futur (utilisé pour les horizons
+// 1 semaine / 2 semaines / 1 mois / ... de la Simulation de progression).
+function projectValueAtDays(points, daysFromNow) {
+  if (points.length < 3) return null;
+  const reg = linRegSlope(points);
+  if (!reg) return null;
+  return reg.intercept + reg.slope * (points[points.length - 1].x + daysFromNow);
+}
+
+// Indice de confiance (0-100) affiché à côté de chaque prédiction — une HEURISTIQUE
+// transparente basée sur la quantité et la régularité des données disponibles, PAS une
+// vraie confiance statistique (pas d'intervalle de confiance calculé, pas de p-value :
+// on n'a pas de modèle probabiliste ici, juste une régression linéaire sur peu de points).
+// Documentée ainsi pour ne jamais laisser croire à une précision qu'elle n'a pas.
+// Pondération assumée et ajustable :
+//   - jusqu'à 40 pts pour le nombre de pesées (10 pesées = plafond)
+//   - jusqu'à 20 pts pour l'étalement dans le temps (60 jours = plafond)
+//   - jusqu'à 25 pts pour le suivi nutritionnel (10 jours renseignés = plafond)
+//   - jusqu'à 15 pts pour la régularité d'entraînement (10 séances = plafond)
+function computeSimulationConfidence({ weightEntriesCount, daySpan, caloriesLogCount, sessionsCount }) {
+  let score = 0;
+  score += Math.min(40, weightEntriesCount * 4);
+  score += Math.min(20, daySpan / 3);
+  score += Math.min(25, caloriesLogCount * 2.5);
+  score += Math.min(15, sessionsCount * 1.5);
+  return Math.round(Math.min(100, score));
+}
+
+const PROJECTION_HORIZONS = [
+  { id: "1w", label: "1 semaine", days: 7 },
+  { id: "2w", label: "2 semaines", days: 14 },
+  { id: "1m", label: "1 mois", days: 30 },
+  { id: "2m", label: "2 mois", days: 60 },
+  { id: "3m", label: "3 mois", days: 90 },
+  { id: "6m", label: "6 mois", days: 182 },
+  { id: "1y", label: "1 an", days: 365 },
+];
+
+// Petit indicateur visuel de confiance, réutilisé partout dans la Simulation.
+function ConfidenceBadge({ theme, score }) {
+  const color = score >= 66 ? theme.good : score >= 33 ? theme.accent2 : theme.bad;
+  return (
+    <span className="px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1" style={{ background: `${color}1f`, color }}>
+      <Target size={11} /> Confiance {score}%
+    </span>
+  );
 }
 
 // Lundi de la semaine contenant `date` (minuit) — utilisé pour découper l'historique en
@@ -301,22 +349,36 @@ function normalizeProgram(p) {
 
 /* ============================== THEME ============================== */
 
+// Palette premium inspirée d'une identité "salle de sport" moderne : noir profond
+// légèrement bleuté (pas un noir pur, plus "riche"), anthracite pour les surfaces,
+// blanc cassé plutôt que blanc pur pour le texte, accent énergique en dégradé
+// rouge-orangé → ambre. Mêmes noms de propriétés qu'avant (aucun risque de casser un
+// usage existant) — uniquement des valeurs plus travaillées, + quelques tokens en plus
+// (shadowSm/shadowMd/glow/gradient) que les composants partagés utilisent désormais.
 function useTheme(isDark) {
-  return useMemo(() => ({
-    bg: isDark ? "#000000" : "#F2F2F7",
-    bgAlt: isDark ? "#0A0A0B" : "#F2F2F7",
-    card: isDark ? "#1C1C1E" : "#FFFFFF",
-    card2: isDark ? "#242426" : "#FBFBFD",
-    border: isDark ? "rgba(255,255,255,0.08)" : "rgba(60,60,67,0.1)",
-    text: isDark ? "#F5F5F7" : "#1C1C1E",
-    textMuted: isDark ? "#8E8E93" : "#6E6E73",
-    textFaint: isDark ? "#636366" : "#AEAEB2",
-    accent: "#FF5A36",
-    accent2: "#FF9F1C",
-    good: "#30D5A6",
-    bad: "#FF453A",
-    tabBg: isDark ? "rgba(20,20,22,0.85)" : "rgba(255,255,255,0.85)",
-  }), [isDark]);
+  return useMemo(() => {
+    const accent = "#FF4B2B";
+    const accent2 = "#FFB020";
+    return {
+      bg: isDark ? "#07080A" : "#F7F7F5",
+      bgAlt: isDark ? "#0C0E11" : "#F7F7F5",
+      card: isDark ? "#15171B" : "#FFFFFF",
+      card2: isDark ? "#1D2025" : "#F0F0EC",
+      border: isDark ? "rgba(255,255,255,0.07)" : "rgba(20,20,20,0.08)",
+      text: isDark ? "#F7F6F3" : "#15171B",
+      textMuted: isDark ? "#9A9CA3" : "#6B6D73",
+      textFaint: isDark ? "#5C5F66" : "#AEAEB2",
+      accent,
+      accent2,
+      good: "#2FD98A",
+      bad: "#FF4757",
+      tabBg: isDark ? "rgba(13,15,18,0.85)" : "rgba(255,255,255,0.85)",
+      gradient: `linear-gradient(135deg, ${accent}, ${accent2})`,
+      shadowSm: isDark ? "0 2px 10px -4px rgba(0,0,0,0.5)" : "0 2px 10px -4px rgba(20,20,20,0.08)",
+      shadowMd: isDark ? "0 16px 40px -16px rgba(0,0,0,0.65)" : "0 16px 40px -16px rgba(20,20,20,0.14)",
+      glow: `0 10px 28px -10px ${accent}70`,
+    };
+  }, [isDark]);
 }
 
 /* ============================== STORAGE HOOK ============================== */
@@ -460,7 +522,7 @@ function Card({ theme, children, className = "", style = {}, onClick }) {
     <div
       onClick={onClick}
       className={`rounded-3xl ${className}`}
-      style={{ background: theme.card, border: `1px solid ${theme.border}`, ...style }}
+      style={{ background: theme.card, border: `1px solid ${theme.border}`, boxShadow: theme.shadowSm, ...style }}
     >
       {children}
     </div>
@@ -473,9 +535,10 @@ function Pill({ theme, children, active, onClick, style = {} }) {
       onClick={onClick}
       className="px-4 py-2 rounded-full text-[13px] font-semibold whitespace-nowrap transition-all active:scale-95"
       style={{
-        background: active ? theme.text : theme.card2,
-        color: active ? theme.bg : theme.textMuted,
+        background: active ? theme.gradient : theme.card2,
+        color: active ? "#fff" : theme.textMuted,
         border: `1px solid ${active ? "transparent" : theme.border}`,
+        boxShadow: active ? theme.glow : "none",
         ...style,
       }}
     >
@@ -489,7 +552,7 @@ function IconButton({ theme, children, onClick, style = {}, className = "" }) {
     <button
       onClick={onClick}
       className={`flex items-center justify-center rounded-full active:scale-90 transition-transform ${className}`}
-      style={{ width: 38, height: 38, background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, ...style }}
+      style={{ width: 38, height: 38, background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, boxShadow: theme.shadowSm, ...style }}
     >
       {children}
     </button>
@@ -501,12 +564,12 @@ function BigButton({ theme, children, onClick, gradient, style = {}, disabled })
     <button
       disabled={disabled}
       onClick={onClick}
-      className="w-full rounded-2xl py-4 font-bold text-[16px] active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
+      className="w-full rounded-2xl py-4 font-bold text-[16px] active:scale-[0.98] hover:brightness-105 transition-all flex items-center justify-center gap-2"
       style={{
-        background: gradient ? `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` : theme.card2,
+        background: gradient ? theme.gradient : theme.card2,
         color: gradient ? "#fff" : theme.text,
         opacity: disabled ? 0.4 : 1,
-        boxShadow: gradient ? `0 8px 24px -8px ${theme.accent}88` : "none",
+        boxShadow: gradient ? theme.glow : "none",
         border: gradient ? "none" : `1px solid ${theme.border}`,
         ...style,
       }}
@@ -561,7 +624,7 @@ function EffortRing({ theme, progress, size = 96, stroke = 11, label, value }) {
 function EmptyState({ theme, icon: Icon, title, subtitle }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-      <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 64, height: 64, background: theme.card2 }}>
+      <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 64, height: 64, background: theme.card2, boxShadow: `inset 0 0 0 1px ${theme.border}` }}>
         <Icon size={26} color={theme.textMuted} />
       </div>
       <p style={{ color: theme.text }} className="font-semibold text-[15px]">{title}</p>
@@ -574,7 +637,7 @@ function EmptyState({ theme, icon: Icon, title, subtitle }) {
 // donner une identité visuelle cohérente et plus énergique qu'une icône nue.
 function IconBadge({ theme, icon: Icon, size = 34, iconSize = 16, tone = "accent", filled = false, className = "" }) {
   const colors = {
-    accent: filled ? `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` : `${theme.accent}1f`,
+    accent: filled ? theme.gradient : `${theme.accent}1f`,
     good: filled ? theme.good : `${theme.good}22`,
     muted: theme.card2,
   };
@@ -591,18 +654,46 @@ function IconBadge({ theme, icon: Icon, size = 34, iconSize = 16, tone = "accent
 
 // Petit logo maison (éclair dans une flamme stylisée) : identité de marque réutilisable,
 // pas une simple icône lucide — sert d'écran de chargement et de repère visuel de l'app.
-function AppLogoMark({ size = 40 }) {
+// Nouvelle identité : trois barres ascendantes (progression) plutôt qu'un éclair — plus
+// sobre, plus "premium", et se lit bien en toute petite taille (favicon, icône d'app).
+// `variant="badge"` (par défaut) = carré arrondi dégradé, pour écran de chargement/app icon.
+// `variant="mono"` = trait seul (currentColor), pour poser le logo sur n'importe quel fond.
+function AppLogoMark({ size = 40, theme, variant = "badge" }) {
+  if (variant === "mono") {
+    const c = theme?.text || "#F7F6F3";
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none">
+        <rect x="9" y="21" width="6" height="11" rx="2.5" fill={c} opacity="0.55" />
+        <rect x="17" y="14" width="6" height="18" rx="2.5" fill={c} opacity="0.8" />
+        <rect x="25" y="7" width="6" height="25" rx="2.5" fill={c} />
+      </svg>
+    );
+  }
   return (
     <svg width={size} height={size} viewBox="0 0 40 40" fill="none">
       <defs>
         <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#FF5A36" />
-          <stop offset="100%" stopColor="#FF9F1C" />
+          <stop offset="0%" stopColor="#FF4B2B" />
+          <stop offset="100%" stopColor="#FFB020" />
         </linearGradient>
       </defs>
       <rect x="1" y="1" width="38" height="38" rx="12" fill="url(#logoGrad)" />
-      <path d="M22 6 L11 22h7l-2 12 13-17h-8l1-11z" fill="#fff" />
+      <rect x="9" y="21" width="6" height="11" rx="2.5" fill="#fff" opacity="0.6" />
+      <rect x="17" y="14" width="6" height="18" rx="2.5" fill="#fff" opacity="0.85" />
+      <rect x="25" y="7" width="6" height="25" rx="2.5" fill="#fff" />
     </svg>
+  );
+}
+
+// Logo horizontal (icône + nom) : en-tête, écran de démarrage, partages.
+function AppLogoHorizontal({ theme, size = 30 }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <AppLogoMark size={size} />
+      <span style={{ color: theme.text, fontSize: size * 0.62, letterSpacing: "-0.01em" }} className="font-extrabold">
+        muscu<span style={{ color: theme.accent }}>·</span>app
+      </span>
+    </div>
   );
 }
 
@@ -849,6 +940,10 @@ export default function App() {
   // Saisie manuelle des calories consommées dans la journée (pas de journal alimentaire
   // complet — cette app ne suit pas d'aliments individuels, juste un total quotidien).
   const [caloriesLog, setCaloriesLog, caloriesLogLoaded] = usePersistentState("gt_calories_log_v1", []);
+  // Saisie manuelle du nombre de pas du jour — sert à estimer la dépense calorique liée à
+  // la marche (voir "Dépense du jour" dans NutritionScreen), en plus de la musculation et
+  // du cardio.
+  const [stepsLog, setStepsLog, stepsLogLoaded] = usePersistentState("gt_steps_log_v1", []);
   // Historique des cibles caloriques calculées + des ajustements hebdomadaires appliqués.
   const [nutritionAdjustments, setNutritionAdjustments, adjustmentsLoaded] = usePersistentState("gt_nutrition_adjustments_v1", []);
 
@@ -884,7 +979,7 @@ export default function App() {
 
   const dataLoaded = programsLoaded && sessionsLoaded && weightLoaded && settingsLoaded && profileLoaded
     && activeWorkoutLoaded && nutritionProfileLoaded && caloriesLogLoaded && adjustmentsLoaded && weeklyPlanningLoaded
-    && progressPhotosLoaded && measurementsLoaded;
+    && progressPhotosLoaded && measurementsLoaded && stepsLogLoaded;
 
   // Sécurité : force une sauvegarde immédiate de la séance active juste avant que
   // l'utilisateur ne quitte/ferme/rafraîchisse la page, plutôt que d'attendre le debounce.
@@ -1019,6 +1114,7 @@ export default function App() {
                 <WorkoutStartScreen
                   theme={theme} programs={programs} settings={settings} setSettings={setSettings}
                   onStart={startWorkout} onGoToPrograms={() => setTab("profile")}
+                  sessions={sessions} setSessions={setSessions}
                 />
               )}
               {tab === "profile" && (
@@ -1035,11 +1131,12 @@ export default function App() {
                   weeklyPlanning={weeklyPlanning} setDayProgram={setDayProgram}
                   progressPhotos={progressPhotos} setProgressPhotos={setProgressPhotos}
                   measurements={measurements} setMeasurements={setMeasurements}
+                  stepsLog={stepsLog} setStepsLog={setStepsLog}
                   onStartProgram={startWorkout}
                   onExport={() => exportBackup({
                     programs, sessions, weightEntries, settings, userProfile,
                     nutritionProfile, caloriesLog, nutritionAdjustments, weeklyPlanning,
-                    measurements, progressPhotos,
+                    measurements, progressPhotos, stepsLog,
                   })}
                   onImport={(data) => {
                     if (data.programs) setPrograms(data.programs);
@@ -1053,6 +1150,7 @@ export default function App() {
                     if (data.weeklyPlanning) setWeeklyPlanning(data.weeklyPlanning);
                     if (data.measurements) setMeasurements(data.measurements);
                     if (data.progressPhotos) setProgressPhotos(data.progressPhotos);
+                    if (data.stepsLog) setStepsLog(data.stepsLog);
                   }}
                 />
               )}
@@ -1236,11 +1334,12 @@ function gatherExportData(all, periodId, customStart, customEnd) {
   const weightEntries = all.weightEntries.filter((e) => inRange(e.date));
   const measurements = all.measurements.filter((m) => inRange(m.date));
   const caloriesLog = all.caloriesLog.filter((c) => inRange(c.date));
+  const stepsLog = (all.stepsLog || []).filter((s) => inRange(s.date));
 
   return {
     period: { start, end, label: EXPORT_PERIODS.find((p) => p.id === periodId)?.label || periodId },
     programs: all.programs,
-    sessions, weightEntries, measurements, caloriesLog,
+    sessions, weightEntries, measurements, caloriesLog, stepsLog,
     settings: all.settings, userProfile: all.userProfile, nutritionProfile: all.nutritionProfile,
     weeklyPlanning: all.weeklyPlanning,
     prs: computePRs(sessions),
@@ -1473,6 +1572,7 @@ function buildFullBackup(all) {
     settings: all.settings, userProfile: all.userProfile,
     nutritionProfile: all.nutritionProfile, caloriesLog: all.caloriesLog, nutritionAdjustments: all.nutritionAdjustments,
     weeklyPlanning: all.weeklyPlanning, measurements: all.measurements, progressPhotos: all.progressPhotos,
+    stepsLog: all.stepsLog,
   };
 }
 function downloadFullBackup(all) {
@@ -1626,7 +1726,7 @@ function BottomNav({ theme, tab, setTab, activeWorkout }) {
       <div className="w-full pointer-events-auto" style={{ maxWidth: 480 }}>
         <div
           className="mx-3 rounded-3xl flex items-stretch justify-between px-1 py-1.5 backdrop-blur-xl"
-          style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.3)", marginBottom: "calc(12px + env(safe-area-inset-bottom))" }}
+          style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, boxShadow: theme.shadowMd, marginBottom: "calc(12px + env(safe-area-inset-bottom))" }}
         >
           {items.map((it) => {
             const selected = tab === it.id;
@@ -1668,7 +1768,7 @@ function ActiveSessionBanner({ theme, status, onTap }) {
     >
       <div
         className="w-full flex items-center gap-3 rounded-2xl px-4 py-3 active:scale-[0.98] transition-transform"
-        style={{ maxWidth: 448, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, boxShadow: `0 10px 30px -10px ${theme.accent}aa` }}
+        style={{ maxWidth: 448, background: theme.gradient, boxShadow: theme.glow }}
       >
         <motion.span animate={{ opacity: [1, 0.4, 1] }} transition={{ repeat: Infinity, duration: 1.3 }} className="shrink-0 flex items-center">
           <Flame size={17} color="#fff" fill="#fff" />
@@ -1693,7 +1793,163 @@ function ActiveSessionBanner({ theme, status, onTap }) {
 // Onglet "Séance" quand AUCUNE séance n'est active : ne montre jamais de liste de
 // programmes ici (ça, c'est le rôle d'Accueil). Juste un état vide qui renvoie choisir
 // une séance sur Accueil.
-function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, onGoToPrograms }) {
+/* ============================== CARDIO & ABDOS AUTONOMES ============================== */
+// Construit une séance "cardio" ou "abdos" indépendante de la musculation, avec EXACTEMENT
+// la même forme qu'une séance normale (date, durationSec, tonnage, totalSets, exerciseLogs)
+// — c'est ce qui permet à tout ce qui lit déjà `sessions` (historique, calendrier, streak,
+// statistiques, calories du jour) de les prendre en compte automatiquement, sans code
+// séparé à maintenir. `type` sert uniquement à les distinguer visuellement.
+function makeCardioSession(cardio, existingId) {
+  return {
+    id: existingId || uid(),
+    type: "cardio",
+    programId: null, programName: CARDIO_TYPES.find((t) => t.id === cardio.type)?.label || "Cardio",
+    date: todayISO(), startedAt: Date.now(),
+    durationSec: (Number(cardio.durationMin) || 0) * 60,
+    tonnage: 0, totalSets: 0, exerciseLogs: [], blocks: [],
+    cardio,
+  };
+}
+function makeAbsSession(exercises, notes, existingId) {
+  const exerciseLogs = exercises.map((ex) => ({
+    exerciseId: ex.id, name: ex.name, targetReps: ex.reps, targetUnit: ex.unit,
+    primaryMuscle: "abdominaux", secondaryMuscles: [], notes: ex.notes || "", restSec: ex.restSec,
+    sets: Array.from({ length: ex.series }, () => ({ weight: "", reps: String(ex.reps), done: true })),
+  }));
+  return {
+    id: existingId || uid(),
+    type: "abs",
+    programId: null, programName: "Abdominaux",
+    date: todayISO(), startedAt: Date.now(),
+    durationSec: 0, tonnage: 0,
+    totalSets: exerciseLogs.reduce((a, el) => a + el.sets.length, 0),
+    exerciseLogs, blocks: [], notes,
+  };
+}
+
+function StandaloneCardioSheet({ theme, initial, onClose, onSave }) {
+  const [cardio, setCardio] = useState(initial || { type: null, durationMin: 20, distance: "", calories: "", intensity: "moderate", notes: "" });
+  const { height: viewportHeight } = useVisualViewport();
+
+  return (
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1 flex items-center gap-1.5"><HeartPulse size={16} color={theme.accent} /> Cardio</h3>
+        <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Indépendant de ta séance de musculation — à tout moment de la journée.</p>
+
+        <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Type</p>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {CARDIO_TYPES.map((t) => (
+            <Pill key={t.id} theme={theme} active={cardio.type === t.id} onClick={() => setCardio((c) => ({ ...c, type: t.id }))}>{t.label}</Pill>
+          ))}
+        </div>
+        {cardio.type && (
+          <>
+            <div className="grid grid-cols-2 gap-2.5 mb-3">
+              <MiniStepper theme={theme} label="Durée" value={cardio.durationMin} step={5} suffix=" min" onChange={(v) => setCardio((c) => ({ ...c, durationMin: Math.max(5, v) }))} />
+              <LabeledInput theme={theme} label="Distance (km, optionnel)" value={cardio.distance} onChange={(v) => setCardio((c) => ({ ...c, distance: v }))} placeholder="Ex : 5" />
+            </div>
+            <div className="mb-3">
+              <LabeledInput theme={theme} label="Calories (optionnel)" value={cardio.calories} onChange={(v) => setCardio((c) => ({ ...c, calories: v }))} placeholder="Si connues (montre, machine...)" />
+            </div>
+            <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold mb-1.5">Intensité</p>
+            <div className="flex gap-1.5 mb-3">
+              {INTENSITY_LEVELS.map((i) => (
+                <Pill key={i.id} theme={theme} active={cardio.intensity === i.id} onClick={() => setCardio((c) => ({ ...c, intensity: i.id }))}>{i.label}</Pill>
+              ))}
+            </div>
+            <textarea placeholder="Notes (optionnel)" value={cardio.notes} onChange={(e) => setCardio((c) => ({ ...c, notes: e.target.value }))} rows={2}
+              className="w-full rounded-xl p-2.5 text-[13px] outline-none resize-none mb-5" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+          </>
+        )}
+        <BigButton theme={theme} gradient disabled={!cardio.type} onClick={() => onSave(cardio)}>
+          <Check size={16} /> Enregistrer
+        </BigButton>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function StandaloneAbsSheet({ theme, initial, initialNotes, onClose, onSave }) {
+  const [exercises, setExercises] = useState(initial || []);
+  const [notes, setNotes] = useState(initialNotes || "");
+  const [draft, setDraft] = useState({ name: "", series: 3, reps: 15, unit: "reps", restSec: 45 });
+  const { height: viewportHeight } = useVisualViewport();
+
+  const addExercise = () => {
+    if (!draft.name.trim()) return;
+    setExercises((list) => [...list, { id: uid(), ...draft, name: draft.name.trim() }]);
+    setDraft({ name: "", series: 3, reps: 15, unit: "reps", restSec: 45 });
+  };
+  const removeExercise = (id) => setExercises((list) => list.filter((e) => e.id !== id));
+
+  return (
+    <motion.div
+      className="fixed inset-0 flex items-end justify-center"
+      style={{ zIndex: 200, height: viewportHeight ? `${viewportHeight}px` : undefined }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    >
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+        className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))", maxHeight: viewportHeight ? `${viewportHeight * 0.85}px` : "85vh", overflowY: "auto" }}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+        <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1">Abdominaux</h3>
+        <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Indépendant de ta séance de musculation — à tout moment de la journée.</p>
+
+        {exercises.length > 0 && (
+          <div className="space-y-2 mb-4">
+            {exercises.map((ex) => (
+              <Card key={ex.id} theme={theme} className="p-3.5 flex items-center justify-between">
+                <div>
+                  <p style={{ color: theme.text }} className="font-semibold text-[14px]">{ex.name}</p>
+                  <p style={{ color: theme.textMuted }} className="text-[12px]">{ex.series} × {ex.reps}{ex.unit === "sec" ? "s" : " reps"} · repos {ex.restSec}s</p>
+                </div>
+                <IconButton theme={theme} onClick={() => removeExercise(ex.id)}><Trash2 size={14} color={theme.bad} /></IconButton>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        <Card theme={theme} className="p-4 space-y-3 mb-4">
+          <input
+            value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            placeholder="Nom de l'exercice (ex : Crunch, Gainage...)"
+            className="w-full rounded-xl px-3.5 py-3 text-[14.5px] outline-none"
+            style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }}
+          />
+          <div className="flex gap-2">
+            <Pill theme={theme} active={draft.unit === "reps"} onClick={() => setDraft((d) => ({ ...d, unit: "reps" }))}>Répétitions</Pill>
+            <Pill theme={theme} active={draft.unit === "sec"} onClick={() => setDraft((d) => ({ ...d, unit: "sec" }))}>Durée (sec)</Pill>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <MiniStepper theme={theme} label="Séries" value={draft.series} onChange={(v) => setDraft((d) => ({ ...d, series: Math.max(1, v) }))} />
+            <MiniStepper theme={theme} label={draft.unit === "sec" ? "Secondes" : "Reps"} value={draft.reps} step={draft.unit === "sec" ? 5 : 1} onChange={(v) => setDraft((d) => ({ ...d, reps: Math.max(1, v) }))} />
+            <MiniStepper theme={theme} label="Repos" value={draft.restSec} step={15} suffix="s" onChange={(v) => setDraft((d) => ({ ...d, restSec: Math.max(0, v) }))} />
+          </div>
+          <BigButton theme={theme} disabled={!draft.name.trim()} onClick={addExercise}>
+            <Plus size={16} /> Ajouter cet exercice
+          </BigButton>
+        </Card>
+
+        <textarea placeholder="Notes (optionnel)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+          className="w-full rounded-xl p-2.5 text-[13px] outline-none resize-none mb-5" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+
+        <BigButton theme={theme} gradient disabled={exercises.length === 0} onClick={() => onSave(exercises, notes)}>
+          <Check size={16} /> Enregistrer
+        </BigButton>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, onGoToPrograms, sessions, setSessions }) {
   // Reprend exactement la logique de suggestion qui vivait avant sur l'Accueil (rotation
   // sur le dernier programme démarré), simplement déplacée ici.
   const suggestedIndex = programs.length ? (settings.lastProgramIndex + 1) % programs.length : -1;
@@ -1708,9 +1964,105 @@ function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, o
     onStart(selectedProgram);
   };
 
+  // --- Cardio & Abdos indépendants : accessibles à tout moment de la journée, avant,
+  // pendant ou après la séance de musculation, sans jamais rouvrir celle-ci. Enregistrés
+  // comme de vraies séances (voir makeCardioSession/makeAbsSession) pour apparaître
+  // automatiquement dans l'historique, le calendrier, le streak et les calories du jour.
+  const [showCardioSheet, setShowCardioSheet] = useState(false);
+  const [showAbsSheet, setShowAbsSheet] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const todayStr = todayISO();
+  const todayCardioSessions = sessions.filter((s) => s.date === todayStr && s.type === "cardio");
+  const todayAbsSessions = sessions.filter((s) => s.date === todayStr && s.type === "abs");
+
+  const saveCardio = (cardio) => {
+    if (editingSessionId) {
+      setSessions((list) => list.map((s) => (s.id === editingSessionId ? makeCardioSession(cardio, s.id) : s)));
+    } else {
+      setSessions((list) => [makeCardioSession(cardio), ...list]);
+    }
+    setShowCardioSheet(false); setEditingSessionId(null);
+  };
+  const saveAbs = (exercises, notes) => {
+    if (editingSessionId) {
+      setSessions((list) => list.map((s) => (s.id === editingSessionId ? makeAbsSession(exercises, notes, s.id) : s)));
+    } else {
+      setSessions((list) => [makeAbsSession(exercises, notes), ...list]);
+    }
+    setShowAbsSheet(false); setEditingSessionId(null);
+  };
+  const deleteStandalone = (id) => setSessions((list) => list.filter((s) => s.id !== id));
+  const editCardio = (s) => { setEditingSessionId(s.id); setShowCardioSheet(true); };
+  const editAbs = (s) => { setEditingSessionId(s.id); setShowAbsSheet(true); };
+
+  const cardioAbsSection = (
+    <div>
+      <SectionTitle theme={theme}>Cardio & Abdos</SectionTitle>
+      <p style={{ color: theme.textMuted }} className="text-[12.5px] px-1 mb-3">Indépendants de ta séance de musculation — ajoute-les à tout moment de la journée.</p>
+
+      {(todayCardioSessions.length > 0 || todayAbsSessions.length > 0) && (
+        <div className="space-y-2 mb-3">
+          {todayCardioSessions.map((s) => (
+            <Card key={s.id} theme={theme} className="p-3.5 flex items-center gap-3">
+              <IconBadge theme={theme} icon={HeartPulse} size={38} iconSize={17} filled />
+              <div className="flex-1 min-w-0">
+                <p style={{ color: theme.text }} className="font-semibold text-[14px] truncate">{s.programName}</p>
+                <p style={{ color: theme.textMuted }} className="text-[12px]">{fmtDuration(s.durationSec || 0)}{s.cardio?.distance ? ` · ${s.cardio.distance} km` : ""}</p>
+              </div>
+              <IconButton theme={theme} onClick={() => editCardio(s)}><Edit2 size={13} color={theme.textMuted} /></IconButton>
+              <IconButton theme={theme} onClick={() => deleteStandalone(s.id)}><Trash2 size={13} color={theme.bad} /></IconButton>
+            </Card>
+          ))}
+          {todayAbsSessions.map((s) => (
+            <Card key={s.id} theme={theme} className="p-3.5 flex items-center gap-3">
+              <IconBadge theme={theme} icon={Flame} size={38} iconSize={17} filled />
+              <div className="flex-1 min-w-0">
+                <p style={{ color: theme.text }} className="font-semibold text-[14px] truncate">Abdominaux</p>
+                <p style={{ color: theme.textMuted }} className="text-[12px]">{s.exerciseLogs.length} exercice{s.exerciseLogs.length !== 1 ? "s" : ""} · {s.totalSets} séries</p>
+              </div>
+              <IconButton theme={theme} onClick={() => editAbs(s)}><Edit2 size={13} color={theme.textMuted} /></IconButton>
+              <IconButton theme={theme} onClick={() => deleteStandalone(s.id)}><Trash2 size={13} color={theme.bad} /></IconButton>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <BigButton theme={theme} onClick={() => { setEditingSessionId(null); setShowCardioSheet(true); }}>
+          <HeartPulse size={16} /> Cardio
+        </BigButton>
+        <BigButton theme={theme} onClick={() => { setEditingSessionId(null); setShowAbsSheet(true); }}>
+          <Flame size={16} /> Abdominaux
+        </BigButton>
+      </div>
+
+      <AnimatePresence>
+        {showCardioSheet && (
+          <StandaloneCardioSheet
+            theme={theme}
+            initial={editingSessionId ? sessions.find((s) => s.id === editingSessionId)?.cardio : null}
+            onClose={() => { setShowCardioSheet(false); setEditingSessionId(null); }}
+            onSave={saveCardio}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showAbsSheet && (
+          <StandaloneAbsSheet
+            theme={theme}
+            initial={editingSessionId ? sessions.find((s) => s.id === editingSessionId)?.exerciseLogs.map((el) => ({ id: el.exerciseId, name: el.name, series: el.sets.length, reps: el.targetReps, unit: el.targetUnit, restSec: el.restSec ?? 45, notes: el.notes })) : null}
+            initialNotes={editingSessionId ? sessions.find((s) => s.id === editingSessionId)?.notes : ""}
+            onClose={() => { setShowAbsSheet(false); setEditingSessionId(null); }}
+            onSave={saveAbs}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+
   if (programs.length === 0) {
     return (
-      <div className="px-4 pt-10">
+      <div className="px-4 pt-6 space-y-6">
         <Card theme={theme} className="p-8 flex flex-col items-center text-center">
           <div className="rounded-full flex items-center justify-center mb-4" style={{ width: 72, height: 72, background: theme.card2 }}>
             <Flame size={30} color={theme.textFaint} />
@@ -1721,12 +2073,13 @@ function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, o
             <Dumbbell size={17} /> Créer un programme
           </BigButton>
         </Card>
+        {cardioAbsSection}
       </div>
     );
   }
 
   return (
-    <div className="px-4 pt-2 space-y-5">
+    <div className="px-4 pt-2 space-y-6">
       <div>
         <SectionTitle theme={theme}>Choisir une séance</SectionTitle>
         <div className="space-y-2.5">
@@ -1739,6 +2092,8 @@ function WorkoutStartScreen({ theme, programs, settings, setSettings, onStart, o
       <BigButton theme={theme} gradient disabled={!selectedProgram} onClick={handleStart}>
         <Play size={18} fill="#fff" /> Commencer la séance
       </BigButton>
+
+      {cardioAbsSection}
     </div>
   );
 }
@@ -2378,6 +2733,7 @@ function ProfileHub({
   nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments,
   weeklyPlanning, setDayProgram,
   progressPhotos, setProgressPhotos, measurements, setMeasurements,
+  stepsLog, setStepsLog,
 }) {
   const [view, setView] = useState(null); // null = menu racine
   const [programId, setProgramId] = useState(null);
@@ -2409,13 +2765,13 @@ function ProfileHub({
               theme={theme}
               onClose={() => setShowExportSheet(false)}
               onExport={(opts) => runExport({
-                programs, sessions, weightEntries, measurements, caloriesLog,
+                programs, sessions, weightEntries, measurements, caloriesLog, stepsLog,
                 settings, userProfile, nutritionProfile, weeklyPlanning,
               }, opts)}
               onFullBackup={() => downloadFullBackup({
                 programs, sessions, weightEntries, settings, userProfile,
                 nutritionProfile, caloriesLog, nutritionAdjustments, weeklyPlanning,
-                measurements, progressPhotos,
+                measurements, progressPhotos, stepsLog,
               })}
             />
           )}
@@ -2533,7 +2889,7 @@ function ProfileHub({
     return (
       <div>
         <SubPageHeader theme={theme} title="Simulation de progression" onBack={() => setView(null)} />
-        <ProgressSimulationScreen theme={theme} sessions={sessions} weightEntries={weightEntries} programs={programs} />
+        <ProgressSimulationScreen theme={theme} sessions={sessions} weightEntries={weightEntries} programs={programs} caloriesLog={caloriesLog} nutritionProfile={nutritionProfile} />
       </div>
     );
   }
@@ -2546,6 +2902,7 @@ function ProfileHub({
           theme={theme} weightEntries={weightEntries} sessions={sessions}
           nutritionProfile={nutritionProfile} setNutritionProfile={setNutritionProfile}
           caloriesLog={caloriesLog} setCaloriesLog={setCaloriesLog}
+          stepsLog={stepsLog} setStepsLog={setStepsLog}
           nutritionAdjustments={nutritionAdjustments} setNutritionAdjustments={setNutritionAdjustments}
         />
       </div>
@@ -2687,7 +3044,103 @@ function NutritionNotificationBanner({ theme, notif }) {
 // les "services" définis plus haut (EnergyCalculator, WorkoutCalorieEstimator, GoalManager,
 // NutritionCalculator, WeeklyAdaptiveAlgorithm) — ce composant ne fait que les appeler et
 // afficher le résultat, il ne contient aucune formule lui-même.
-function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, nutritionAdjustments, setNutritionAdjustments }) {
+// Ligne de progression pour un nutriment (calories, protéines, glucides ou lipides) :
+// consommé / objectif, pourcentage atteint, quantité restante ou dépassement, barre visuelle.
+function MacroProgressRow({ theme, icon: Icon, color, label, unit, consumed, target, last }) {
+  const pct = target ? Math.min(100, Math.round((consumed / target) * 100)) : null;
+  const remaining = target != null ? Math.round(target - consumed) : null;
+  return (
+    <div className={last ? "" : "mb-3"}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-semibold" style={{ color: theme.text }}>
+          <Icon size={13} color={color} /> {label}
+        </span>
+        <span className="text-[11px]" style={{ color: theme.textMuted }}>
+          {Math.round(consumed)}{unit} / {target != null ? `${Math.round(target)}${unit}` : "—"}
+          {pct != null && ` · ${pct}%`}
+        </span>
+      </div>
+      <div className="rounded-full overflow-hidden" style={{ height: 7, background: theme.card2 }}>
+        <div style={{ height: "100%", width: `${pct || 0}%`, background: color, transition: "width 0.4s" }} />
+      </div>
+      {target != null && (
+        <p style={{ color: remaining >= 0 ? theme.textFaint : theme.bad }} className="text-[10.5px] mt-1">
+          {remaining >= 0 ? `${remaining}${unit} restant` : `${Math.abs(remaining)}${unit} de dépassement`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const NUTRITION_HISTORY_PERIODS = [
+  { id: "day", label: "Jour" },
+  { id: "week", label: "Semaine" },
+  { id: "month", label: "Mois" },
+];
+
+// Historique quotidien / hebdomadaire / mensuel des apports — agrège `caloriesLog` (les
+// mêmes entrées que le suivi du jour) sans stockage séparé : une seule source de vérité.
+function NutritionHistorySection({ theme, caloriesLog, targets }) {
+  const [period, setPeriod] = useState("day");
+
+  const data = useMemo(() => {
+    const sorted = [...caloriesLog].sort((a, b) => a.date.localeCompare(b.date));
+    if (period === "day") {
+      return sorted.slice(-14).map((c) => ({ label: fmtDate(c.date, { day: "numeric", month: "short" }), calories: c.calories || 0, protein: c.protein || 0, carbs: c.carbs || 0, fat: c.fat || 0 }));
+    }
+    const groups = {};
+    sorted.forEach((c) => {
+      let key;
+      if (period === "week") {
+        const d = new Date(c.date);
+        const monday = new Date(d);
+        monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+        key = monday.toISOString().slice(0, 10);
+      } else {
+        key = c.date.slice(0, 7); // YYYY-MM
+      }
+      groups[key] = groups[key] || { calories: [], protein: [], carbs: [], fat: [] };
+      groups[key].calories.push(c.calories || 0);
+      if (c.protein != null) groups[key].protein.push(c.protein);
+      if (c.carbs != null) groups[key].carbs.push(c.carbs);
+      if (c.fat != null) groups[key].fat.push(c.fat);
+    });
+    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+    return Object.entries(groups).slice(-12).map(([key, g]) => ({
+      label: period === "week" ? fmtDate(key, { day: "numeric", month: "short" }) : fmtDate(`${key}-01`, { month: "short", year: "2-digit" }),
+      calories: Math.round(avg(g.calories)), protein: Math.round(avg(g.protein)), carbs: Math.round(avg(g.carbs)), fat: Math.round(avg(g.fat)),
+    }));
+  }, [caloriesLog, period]);
+
+  return (
+    <div>
+      <SectionTitle theme={theme}>Historique nutritionnel</SectionTitle>
+      <div className="flex gap-2 mb-3">
+        {NUTRITION_HISTORY_PERIODS.map((p) => (
+          <Pill key={p.id} theme={theme} active={period === p.id} onClick={() => setPeriod(p.id)}>{p.label}</Pill>
+        ))}
+      </div>
+      {data.length === 0 ? (
+        <Card theme={theme}><EmptyState theme={theme} icon={Beef} title="Aucune donnée" subtitle="Renseigne tes apports quotidiens pour voir apparaître ton historique ici." /></Card>
+      ) : (
+        <ChartCard theme={theme} title={period === "day" ? "Calories (14 derniers jours)" : period === "week" ? "Moyenne calorique par semaine" : "Moyenne calorique par mois"}>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={data} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={theme.border} vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: theme.textFaint }} axisLine={false} tickLine={false} width={30} />
+              <Tooltip contentStyle={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12, fontSize: 12 }} labelStyle={{ color: theme.text }} />
+              {targets?.calories && <ReferenceLine y={targets.calories} stroke={theme.textFaint} strokeDasharray="4 4" />}
+              <Bar dataKey="calories" fill={theme.accent} radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+    </div>
+  );
+}
+
+function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, setNutritionProfile, caloriesLog, setCaloriesLog, stepsLog, setStepsLog, nutritionAdjustments, setNutritionAdjustments }) {
   const sortedWeights = useMemo(() => [...weightEntries].sort((a, b) => a.date.localeCompare(b.date)), [weightEntries]);
   const currentWeight = sortedWeights.length ? sortedWeights[sortedWeights.length - 1].weight : null;
   const daysSinceLastWeight = sortedWeights.length
@@ -2718,24 +3171,104 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
   const macros = calorieTarget && currentWeight ? NutritionCalculator.computeMacros({ calories: calorieTarget, weightKg: currentWeight, goal: nutritionProfile.goal }) : null;
 
   const todayStr = todayISO();
-  const todaySession = sessions.find((s) => s.date === todayStr);
-  const todayStrengthKcal = todaySession ? WorkoutCalorieEstimator.estimateStrengthSessionKcal({ tonnage: todaySession.tonnage, durationSec: todaySession.durationSec, bodyWeightKg: currentWeight }) : 0;
-  // Si un cardio a réellement été renseigné en fin de séance aujourd'hui (voir l'étape
-  // "Ajouter un cardio" dans WorkoutSession), on l'utilise à la place de la moyenne
-  // estimée à partir du profil — c'est une mesure réelle, plus fiable qu'une moyenne.
-  const todayCardioKcal = todaySession?.cardio
-    ? WorkoutCalorieEstimator.estimateCardioSessionKcal({ ...todaySession.cardio, bodyWeightKg: currentWeight })
+  // Toutes les séances du jour (musculation + cardio/abdos autonomes) — avant ce correctif,
+  // seule la PREMIÈRE séance du jour était prise en compte, ce qui ratait les nouvelles
+  // séances cardio/abdos autonomes dès qu'une séance de musculation avait aussi eu lieu.
+  const todaySessionsAll = sessions.filter((s) => s.date === todayStr);
+  const todaySession = todaySessionsAll[0]; // gardé pour compatibilité (streak/affichage existants)
+  const todayStrengthSessions = todaySessionsAll.filter((s) => s.type !== "cardio");
+  const todayStrengthKcal = todayStrengthSessions.reduce(
+    (a, s) => a + WorkoutCalorieEstimator.estimateStrengthSessionKcal({ tonnage: s.tonnage, durationSec: s.durationSec, bodyWeightKg: currentWeight }), 0
+  );
+  // Cardio réellement renseigné aujourd'hui — que ce soit via une séance cardio autonome
+  // (page Séance) ou via l'étape "Ajouter un cardio" en fin de séance de musculation —
+  // utilisé à la place de la moyenne estimée à partir du profil dès qu'au moins une
+  // entrée réelle existe pour aujourd'hui.
+  const todayCardioEntries = todaySessionsAll.filter((s) => s.cardio).map((s) => s.cardio);
+  const todayCardioKcal = todayCardioEntries.length
+    ? todayCardioEntries.reduce((a, c) => a + WorkoutCalorieEstimator.estimateCardioSessionKcal({ ...c, bodyWeightKg: currentWeight }), 0)
     : avgCardioKcal;
-  const todayTotalBurn = Math.round((bmr || 0) + todayStrengthKcal + todayCardioKcal);
 
-  const todayCalorieEntry = caloriesLog.find((c) => c.date === todayStr);
-  const [calInput, setCalInput] = useState(todayCalorieEntry ? String(todayCalorieEntry.calories) : "");
-  useEffect(() => { setCalInput(todayCalorieEntry ? String(todayCalorieEntry.calories) : ""); }, [todayCalorieEntry?.calories]);
-  const saveCalories = () => {
-    const parsed = parseLocaleNumber(calInput);
+  const todayStepsEntry = (stepsLog || []).find((s) => s.date === todayStr);
+  const todaySteps = todayStepsEntry?.steps || 0;
+  const todayStepsKcal = WorkoutCalorieEstimator.estimateStepsKcal({ steps: todaySteps, bodyWeightKg: currentWeight });
+
+  const todayTotalBurn = Math.round((bmr || 0) + todayStrengthKcal + todayCardioKcal + todayStepsKcal);
+
+  const [stepsInput, setStepsInput] = useState(todayStepsEntry ? String(todayStepsEntry.steps) : "");
+  useEffect(() => { setStepsInput(todayStepsEntry ? String(todayStepsEntry.steps) : ""); }, [todayStepsEntry?.steps]);
+  const saveSteps = () => {
+    const parsed = parseLocaleNumber(stepsInput);
     if (!Number.isFinite(parsed) || parsed < 0) return;
-    setCaloriesLog((log) => (log.some((c) => c.date === todayStr) ? log.map((c) => (c.date === todayStr ? { ...c, calories: parsed } : c)) : [...log, { date: todayStr, calories: parsed }]));
+    const rounded = Math.round(parsed);
+    setStepsLog((log) => (log.some((s) => s.date === todayStr) ? log.map((s) => (s.date === todayStr ? { ...s, steps: rounded } : s)) : [...log, { date: todayStr, steps: rounded }]));
   };
+
+  const todayCalorieEntry = caloriesLog.find((c) => c.date === todayStr) || null;
+  const [macroInputs, setMacroInputs] = useState({
+    calories: todayCalorieEntry?.calories != null ? String(todayCalorieEntry.calories) : "",
+    protein: todayCalorieEntry?.protein != null ? String(todayCalorieEntry.protein) : "",
+    carbs: todayCalorieEntry?.carbs != null ? String(todayCalorieEntry.carbs) : "",
+    fat: todayCalorieEntry?.fat != null ? String(todayCalorieEntry.fat) : "",
+  });
+  useEffect(() => {
+    setMacroInputs({
+      calories: todayCalorieEntry?.calories != null ? String(todayCalorieEntry.calories) : "",
+      protein: todayCalorieEntry?.protein != null ? String(todayCalorieEntry.protein) : "",
+      carbs: todayCalorieEntry?.carbs != null ? String(todayCalorieEntry.carbs) : "",
+      fat: todayCalorieEntry?.fat != null ? String(todayCalorieEntry.fat) : "",
+    });
+  }, [todayCalorieEntry?.calories, todayCalorieEntry?.protein, todayCalorieEntry?.carbs, todayCalorieEntry?.fat]);
+  const setMacroField = (key, v) => setMacroInputs((m) => ({ ...m, [key]: v }));
+  // Enregistre calories + les 3 macros ensemble, dans la même entrée de `caloriesLog` (le
+  // nom de la clé de stockage n'a pas changé pour éviter toute migration de données —
+  // seuls les champs protein/carbs/fat sont maintenant utilisés en plus de calories).
+  const saveMacros = () => {
+    const parsedCal = parseLocaleNumber(macroInputs.calories);
+    if (!Number.isFinite(parsedCal) || parsedCal < 0) return;
+    const parseOptional = (v) => {
+      if (v.trim() === "") return null;
+      const n = parseLocaleNumber(v);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
+    const entry = {
+      date: todayStr, calories: parsedCal,
+      protein: parseOptional(macroInputs.protein), carbs: parseOptional(macroInputs.carbs), fat: parseOptional(macroInputs.fat),
+    };
+    setCaloriesLog((log) => (log.some((c) => c.date === todayStr) ? log.map((c) => (c.date === todayStr ? entry : c)) : [...log, entry]));
+  };
+
+  // Objectifs personnalisés par macronutriment : par défaut, les cibles calculées
+  // (calorieTarget / macros.*) sont utilisées ; l'utilisateur peut les remplacer.
+  const customTargets = nutritionProfile.customMacroTargets;
+  const effectiveTargets = {
+    calories: customTargets?.calories ?? calorieTarget,
+    protein: customTargets?.protein ?? macros?.proteinG ?? null,
+    carbs: customTargets?.carbs ?? macros?.carbsG ?? null,
+    fat: customTargets?.fat ?? macros?.fatG ?? null,
+  };
+  const [editingTargets, setEditingTargets] = useState(false);
+  const [targetDraft, setTargetDraft] = useState({
+    calories: effectiveTargets.calories ? String(effectiveTargets.calories) : "",
+    protein: effectiveTargets.protein ? String(effectiveTargets.protein) : "",
+    carbs: effectiveTargets.carbs ? String(effectiveTargets.carbs) : "",
+    fat: effectiveTargets.fat ? String(effectiveTargets.fat) : "",
+  });
+  const openTargetEditor = () => {
+    setTargetDraft({
+      calories: effectiveTargets.calories ? String(effectiveTargets.calories) : "",
+      protein: effectiveTargets.protein ? String(effectiveTargets.protein) : "",
+      carbs: effectiveTargets.carbs ? String(effectiveTargets.carbs) : "",
+      fat: effectiveTargets.fat ? String(effectiveTargets.fat) : "",
+    });
+    setEditingTargets(true);
+  };
+  const saveTargets = () => {
+    const n = (v) => { const p = parseLocaleNumber(v); return Number.isFinite(p) && p > 0 ? p : null; };
+    update({ customMacroTargets: { calories: n(targetDraft.calories), protein: n(targetDraft.protein), carbs: n(targetDraft.carbs), fat: n(targetDraft.fat) } });
+    setEditingTargets(false);
+  };
+  const resetTargets = () => { update({ customMacroTargets: null }); setEditingTargets(false); };
 
   // Un instantané par jour maximum (pas à chaque rendu) : sert de base à l'historique/graphique.
   useEffect(() => {
@@ -2795,19 +3328,67 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
       </Card>
 
       <Card theme={theme} className="p-4">
-        <div className="flex items-center justify-between mb-2">
-          <p style={{ color: theme.text }} className="font-bold text-[14px]">Calories consommées</p>
-          <p style={{ color: theme.textMuted }} className="text-[12.5px]">{todayCalorieEntry ? todayCalorieEntry.calories.toLocaleString("fr-FR") : 0} / {calorieTarget ? calorieTarget.toLocaleString("fr-FR") : "—"} kcal</p>
+        <div className="flex items-center justify-between mb-3">
+          <p style={{ color: theme.text }} className="font-bold text-[14px]">Suivi nutritionnel du jour</p>
+          <button onClick={openTargetEditor} className="text-[11.5px] font-bold flex items-center gap-1" style={{ color: theme.accent }}><Edit3 size={11} /> Objectifs</button>
         </div>
-        <div className="rounded-full overflow-hidden mb-3" style={{ height: 10, background: theme.card2 }}>
-          <div style={{ height: "100%", width: `${calorieTarget ? Math.min(100, ((todayCalorieEntry?.calories || 0) / calorieTarget) * 100) : 0}%`, background: `linear-gradient(90deg, ${theme.accent}, ${theme.accent2})`, transition: "width 0.4s" }} />
+
+        <MacroProgressRow theme={theme} icon={Flame} color={theme.accent} label="Calories" unit=" kcal" consumed={todayCalorieEntry?.calories || 0} target={effectiveTargets.calories} />
+        <MacroProgressRow theme={theme} icon={Beef} color={theme.accent2} label="Protéines" unit="g" consumed={todayCalorieEntry?.protein || 0} target={effectiveTargets.protein} />
+        <MacroProgressRow theme={theme} icon={Wheat} color={theme.good} label="Glucides" unit="g" consumed={todayCalorieEntry?.carbs || 0} target={effectiveTargets.carbs} />
+        <MacroProgressRow theme={theme} icon={Droplet} color="#4EA1FF" label="Lipides" unit="g" consumed={todayCalorieEntry?.fat || 0} target={effectiveTargets.fat} last />
+
+        <div className="grid grid-cols-2 gap-2 mt-3 mb-2">
+          <input inputMode="decimal" placeholder="Calories" value={macroInputs.calories} onChange={(e) => setMacroField("calories", e.target.value)}
+            className="rounded-xl px-3 py-2.5 text-[13.5px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+          <input inputMode="decimal" placeholder="Protéines (g)" value={macroInputs.protein} onChange={(e) => setMacroField("protein", e.target.value)}
+            className="rounded-xl px-3 py-2.5 text-[13.5px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+          <input inputMode="decimal" placeholder="Glucides (g)" value={macroInputs.carbs} onChange={(e) => setMacroField("carbs", e.target.value)}
+            className="rounded-xl px-3 py-2.5 text-[13.5px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+          <input inputMode="decimal" placeholder="Lipides (g)" value={macroInputs.fat} onChange={(e) => setMacroField("fat", e.target.value)}
+            className="rounded-xl px-3 py-2.5 text-[13.5px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
+        </div>
+        <BigButton theme={theme} gradient onClick={saveMacros}>Enregistrer</BigButton>
+        <p style={{ color: theme.textFaint }} className="text-[11px] mt-2">Saisie manuelle quotidienne (pas de journal alimentaire détaillé par aliment dans cette version). Protéines/glucides/lipides sont optionnels.</p>
+      </Card>
+
+      <AnimatePresence>
+        {editingTargets && (
+          <motion.div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: 200 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.5)" }} onClick={() => setEditingTargets(false)} />
+            <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 30, stiffness: 300 }}
+              className="relative w-full rounded-t-3xl p-5" style={{ maxWidth: 480, background: theme.card, borderTop: `1px solid ${theme.border}`, paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
+              <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: theme.border }} />
+              <h3 style={{ color: theme.text }} className="text-[17px] font-bold mb-1">Objectifs personnalisés</h3>
+              <p style={{ color: theme.textMuted }} className="text-[12.5px] mb-4">Remplace les objectifs calculés automatiquement. Laisse vide pour revenir au calcul automatique.</p>
+              <div className="grid grid-cols-2 gap-2.5 mb-5">
+                <LabeledInput theme={theme} label="Calories (kcal)" value={targetDraft.calories} onChange={(v) => setTargetDraft((t) => ({ ...t, calories: v }))} placeholder={calorieTarget ? String(calorieTarget) : "—"} />
+                <LabeledInput theme={theme} label="Protéines (g)" value={targetDraft.protein} onChange={(v) => setTargetDraft((t) => ({ ...t, protein: v }))} placeholder={macros ? String(macros.proteinG) : "—"} />
+                <LabeledInput theme={theme} label="Glucides (g)" value={targetDraft.carbs} onChange={(v) => setTargetDraft((t) => ({ ...t, carbs: v }))} placeholder={macros ? String(macros.carbsG) : "—"} />
+                <LabeledInput theme={theme} label="Lipides (g)" value={targetDraft.fat} onChange={(v) => setTargetDraft((t) => ({ ...t, fat: v }))} placeholder={macros ? String(macros.fatG) : "—"} />
+              </div>
+              <div className="flex gap-2.5">
+                {customTargets && <BigButton theme={theme} onClick={resetTargets}>Réinitialiser</BigButton>}
+                <BigButton theme={theme} gradient onClick={saveTargets}>Enregistrer</BigButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <Card theme={theme} className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <p style={{ color: theme.text }} className="font-bold text-[14px] flex items-center gap-1.5"><Footprints size={15} color={theme.accent} /> Pas aujourd'hui</p>
+          <p style={{ color: theme.textMuted }} className="text-[12.5px]">{todaySteps ? todaySteps.toLocaleString("fr-FR") : 0} pas</p>
         </div>
         <div className="flex items-center gap-2">
-          <input inputMode="decimal" placeholder="Ex : 1800" value={calInput} onChange={(e) => setCalInput(e.target.value)}
+          <input inputMode="numeric" placeholder="Ex : 8000" value={stepsInput} onChange={(e) => setStepsInput(e.target.value)}
             className="flex-1 rounded-xl px-3 py-2.5 text-[14px] font-semibold outline-none" style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}` }} />
-          <button onClick={saveCalories} className="px-4 py-2.5 rounded-xl font-bold text-[13px] text-white active:scale-95 transition-transform" style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` }}>OK</button>
+          <button onClick={saveSteps} className="px-4 py-2.5 rounded-xl font-bold text-[13px] text-white active:scale-95 transition-transform" style={{ background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})` }}>OK</button>
         </div>
-        <p style={{ color: theme.textFaint }} className="text-[11px] mt-2">Saisie manuelle quotidienne (pas de journal alimentaire détaillé dans cette version).</p>
+        {todaySteps > 0 && (
+          <p style={{ color: theme.textFaint }} className="text-[11px] mt-2">≈ {todayStepsKcal} kcal dépensées à la marche (estimation à partir de ton poids).</p>
+        )}
       </Card>
 
       <Card theme={theme} className="p-4">
@@ -2815,7 +3396,8 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Métabolisme de base</span><span style={{ color: theme.text }} className="font-semibold">{bmr || 0} kcal</span></div>
           <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Séance de musculation</span><span style={{ color: theme.text }} className="font-semibold">{todayStrengthKcal} kcal</span></div>
-          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Cardio {todaySession?.cardio ? "(séance du jour)" : "(moyenne)"}</span><span style={{ color: theme.text }} className="font-semibold">{todayCardioKcal} kcal</span></div>
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Cardio {todayCardioEntries.length ? "(séance du jour)" : "(moyenne)"}</span><span style={{ color: theme.text }} className="font-semibold">{todayCardioKcal} kcal</span></div>
+          <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Marche ({todaySteps.toLocaleString("fr-FR")} pas)</span><span style={{ color: theme.text }} className="font-semibold">{todayStepsKcal} kcal</span></div>
           <div className="flex items-center justify-between text-[13.5px] pt-1.5" style={{ borderTop: `1px solid ${theme.border}` }}><span style={{ color: theme.text }} className="font-bold">Total</span><span style={{ color: theme.accent }} className="font-extrabold">{todayTotalBurn} kcal</span></div>
         </div>
       </Card>
@@ -2826,28 +3408,7 @@ function NutritionScreen({ theme, weightEntries, sessions, nutritionProfile, set
         <Card theme={theme} className="p-3.5"><p style={{ color: theme.textMuted }} className="text-[10.5px] font-semibold mb-1">Variation</p><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{currentWeight && nutritionProfile.weightTarget ? `${(currentWeight - nutritionProfile.weightTarget) > 0 ? "+" : ""}${fmtWeight(currentWeight - nutritionProfile.weightTarget)}` : "—"}</p></Card>
       </div>
 
-      {macros && (
-        <Card theme={theme} className="p-4">
-          <p style={{ color: theme.text }} className="font-bold text-[14px] mb-3">Macronutriments recommandés</p>
-          <div className="grid grid-cols-3 gap-2.5">
-            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
-              <Beef size={16} color={theme.accent} className="mx-auto mb-1.5" />
-              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.proteinG}g</p>
-              <p style={{ color: theme.textFaint }} className="text-[10px]">Protéines</p>
-            </div>
-            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
-              <Droplet size={16} color={theme.accent2} className="mx-auto mb-1.5" />
-              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.fatG}g</p>
-              <p style={{ color: theme.textFaint }} className="text-[10px]">Lipides</p>
-            </div>
-            <div className="rounded-2xl p-3 text-center" style={{ background: theme.card2 }}>
-              <Wheat size={16} color={theme.good} className="mx-auto mb-1.5" />
-              <p style={{ color: theme.text }} className="text-[15px] font-extrabold">{macros.carbsG}g</p>
-              <p style={{ color: theme.textFaint }} className="text-[10px]">Glucides</p>
-            </div>
-          </div>
-        </Card>
-      )}
+      <NutritionHistorySection theme={theme} caloriesLog={caloriesLog} targets={effectiveTargets} />
 
       {(weeklyAnalysis.status === "too_slow" || weeklyAnalysis.status === "too_fast") && (
         <Card theme={theme} className="p-4" style={{ border: `1.5px solid ${theme.accent}55` }}>
@@ -3000,6 +3561,16 @@ const WorkoutCalorieEstimator = {
     const hoursPerWeek = (cardioSessionsPerWeek * cardioDurationMin) / 60;
     const weeklyKcal = WorkoutCalorieEstimator.CARDIO_MET_MODERATE * bodyWeightKg * hoursPerWeek;
     return Math.round(weeklyKcal / 7);
+  },
+
+  // Calories dépensées à la marche à partir du nombre de pas — hypothèse documentée et
+  // ajustable : ~0,0005 kcal par pas et par kg de poids corporel, cohérent avec les
+  // estimations usuelles (~30 à 40 kcal pour 1000 pas chez un adulte moyen de 70 kg :
+  // 1000 × 0,0005 × 70 = 35 kcal). Simplification qui ne tient pas compte de la vitesse
+  // de marche ni du dénivelé, uniquement du nombre de pas et du poids.
+  estimateStepsKcal({ steps, bodyWeightKg }) {
+    if (!steps || !bodyWeightKg) return 0;
+    return Math.round(steps * 0.0005 * bodyWeightKg);
   },
 };
 
@@ -5198,16 +5769,30 @@ function HistoryList({ theme, sessions, onOpen, onEdit }) {
                 <button onClick={() => onOpen(s.id)} className="flex-1 flex items-center justify-between text-left min-w-0">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="rounded-2xl flex flex-col items-center justify-center shrink-0" style={{ width: 44, height: 44, background: theme.card2 }}>
-                      <span style={{ color: theme.text }} className="text-[13px] font-extrabold leading-none">{fmtDate(s.date, { day: "numeric" })}</span>
-                      <span style={{ color: theme.textFaint }} className="text-[8.5px] font-semibold uppercase">{fmtDate(s.date, { month: "short" })}</span>
+                      {s.type === "cardio" || s.type === "abs" ? (
+                        s.type === "cardio" ? <HeartPulse size={16} color={theme.accent} /> : <Flame size={16} color={theme.accent} />
+                      ) : (
+                        <>
+                          <span style={{ color: theme.text }} className="text-[13px] font-extrabold leading-none">{fmtDate(s.date, { day: "numeric" })}</span>
+                          <span style={{ color: theme.textFaint }} className="text-[8.5px] font-semibold uppercase">{fmtDate(s.date, { month: "short" })}</span>
+                        </>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p style={{ color: theme.text }} className="font-semibold text-[14.5px] truncate">{s.programName}</p>
-                      <p style={{ color: theme.textMuted }} className="text-[12px]">{fmtDuration(s.durationSec || 0)} · {s.totalSets} séries</p>
+                      <p style={{ color: theme.textMuted }} className="text-[12px]">
+                        {s.type === "cardio"
+                          ? `${fmtDuration(s.durationSec || 0)}${s.cardio?.distance ? ` · ${s.cardio.distance} km` : ""}`
+                          : s.type === "abs"
+                            ? `${s.exerciseLogs.length} exercice${s.exerciseLogs.length !== 1 ? "s" : ""} · ${s.totalSets} séries`
+                            : `${fmtDuration(s.durationSec || 0)} · ${s.totalSets} séries`}
+                      </p>
                     </div>
                   </div>
                   <div className="text-right flex items-center gap-1.5 shrink-0 pl-2">
-                    <p style={{ color: theme.accent }} className="text-[13px] font-bold">{Math.round(s.tonnage).toLocaleString("fr-FR")}kg</p>
+                    {s.type !== "cardio" && s.type !== "abs" && (
+                      <p style={{ color: theme.accent }} className="text-[13px] font-bold">{Math.round(s.tonnage).toLocaleString("fr-FR")}kg</p>
+                    )}
                     <ChevronRight size={14} color={theme.textFaint} />
                   </div>
                 </button>
@@ -5252,6 +5837,19 @@ function SessionDetail({ theme, session, onBack, onDelete, onDuplicate, onEdit }
         <Card theme={theme} className="p-3 text-center"><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{session.totalSets}</p><p style={{ color: theme.textFaint }} className="text-[10px]">séries</p></Card>
         <Card theme={theme} className="p-3 text-center"><p style={{ color: theme.text }} className="text-[16px] font-extrabold">{fmtDuration(session.durationSec || 0)}</p><p style={{ color: theme.textFaint }} className="text-[10px]">durée</p></Card>
       </div>
+      {session.cardio && (
+        <Card theme={theme} className="p-4">
+          <p style={{ color: theme.text }} className="font-bold text-[14px] mb-2.5 flex items-center gap-1.5"><HeartPulse size={15} color={theme.accent} /> Cardio</p>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Type</span><span style={{ color: theme.text }} className="font-semibold">{CARDIO_TYPES.find((t) => t.id === session.cardio.type)?.label || session.cardio.type}</span></div>
+            <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Durée</span><span style={{ color: theme.text }} className="font-semibold">{session.cardio.durationMin} min</span></div>
+            {session.cardio.distance && <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Distance</span><span style={{ color: theme.text }} className="font-semibold">{session.cardio.distance} km</span></div>}
+            {session.cardio.calories && <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Calories</span><span style={{ color: theme.text }} className="font-semibold">{session.cardio.calories} kcal</span></div>}
+            <div className="flex items-center justify-between text-[13px]"><span style={{ color: theme.textMuted }}>Intensité</span><span style={{ color: theme.text }} className="font-semibold">{INTENSITY_LEVELS.find((i) => i.id === session.cardio.intensity)?.label || session.cardio.intensity}</span></div>
+            {session.cardio.notes && <p style={{ color: theme.textMuted, borderTop: `1px solid ${theme.border}` }} className="text-[12.5px] pt-1.5">{session.cardio.notes}</p>}
+          </div>
+        </Card>
+      )}
       <div className="space-y-2.5">
         {(() => {
           const byId = Object.fromEntries(session.exerciseLogs.map((el) => [el.exerciseId, el]));
@@ -5664,7 +6262,7 @@ function ProgressPage({ theme, sessions, programs }) {
 
 /* ============================== SIMULATION DE PROGRESSION (Premium) ============================== */
 
-function ProgressSimulationScreen({ theme, sessions, weightEntries, programs }) {
+function ProgressSimulationScreen({ theme, sessions, weightEntries, programs, caloriesLog, nutritionProfile }) {
   const [mode, setMode] = useState("strength"); // 'strength' | 'weight'
   return (
     <div className="px-4 pt-2 space-y-4">
@@ -5675,7 +6273,7 @@ function ProgressSimulationScreen({ theme, sessions, weightEntries, programs }) 
       {mode === "strength" ? (
         <StrengthSimulation theme={theme} sessions={sessions} programs={programs} />
       ) : (
-        <WeightSimulation theme={theme} weightEntries={weightEntries} />
+        <WeightSimulation theme={theme} weightEntries={weightEntries} sessions={sessions} caloriesLog={caloriesLog} nutritionProfile={nutritionProfile} />
       )}
     </div>
   );
@@ -5708,13 +6306,21 @@ function StrengthSimulation({ theme, sessions, programs }) {
   }, [sessions, selected]);
 
   const targetNum = parseLocaleNumber(target);
-  const estimate = useMemo(() => {
-    if (points.length < 3 || !Number.isFinite(targetNum) || targetNum <= 0) return null;
+  const regressionPoints = useMemo(() => {
+    if (points.length < 3) return [];
     const base = new Date(points[0].date).getTime();
-    const regPoints = points.map((p) => ({ x: (new Date(p.date).getTime() - base) / 86400000, y: p.maxWeight }));
-    return estimateTargetETA(regPoints, targetNum);
-  }, [points, targetNum]);
+    return points.map((p) => ({ x: (new Date(p.date).getTime() - base) / 86400000, y: p.maxWeight }));
+  }, [points]);
+  const estimate = useMemo(() => (
+    regressionPoints.length && Number.isFinite(targetNum) && targetNum > 0 ? estimateTargetETA(regressionPoints, targetNum) : null
+  ), [regressionPoints, targetNum]);
   const currentMax = points.length ? points[points.length - 1].maxWeight : null;
+  const daySpan = points.length >= 2 ? (new Date(points[points.length - 1].date).getTime() - new Date(points[0].date).getTime()) / 86400000 : 0;
+  const confidence = computeSimulationConfidence({ weightEntriesCount: points.length, daySpan, caloriesLogCount: 0, sessionsCount: points.length });
+  const horizonProjections = useMemo(() => {
+    if (!regressionPoints.length) return [];
+    return PROJECTION_HORIZONS.map((h) => ({ ...h, value: projectValueAtDays(regressionPoints, h.days) }));
+  }, [regressionPoints]);
 
   if (allExercises.length === 0) {
     return <Card theme={theme}><EmptyState theme={theme} icon={Dumbbell} title="Aucun exercice enregistré" subtitle="Réalise quelques séances pour pouvoir simuler ta progression." /></Card>;
@@ -5737,10 +6343,13 @@ function StrengthSimulation({ theme, sessions, programs }) {
       </div>
 
       {currentMax != null && (
-        <Card theme={theme} className="p-4">
-          <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Charge actuelle max</p>
-          <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{currentMax} kg</p>
-        </Card>
+        <div className="flex items-center justify-between">
+          <Card theme={theme} className="p-4 flex-1 mr-2.5">
+            <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Charge actuelle max</p>
+            <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{currentMax} kg</p>
+          </Card>
+          <ConfidenceBadge theme={theme} score={confidence} />
+        </div>
       )}
 
       <LabeledInput theme={theme} label="Objectif (kg)" value={target} onChange={setTarget} placeholder="Ex : 120" />
@@ -5782,30 +6391,101 @@ function StrengthSimulation({ theme, sessions, programs }) {
         </ChartCard>
       )}
 
+      {horizonProjections.length > 0 && (
+        <div>
+          <SectionTitle theme={theme}>Projections</SectionTitle>
+          <Card theme={theme} className="p-2">
+            {horizonProjections.map((h, i) => (
+              <div key={h.id} className="flex items-center justify-between px-3 py-2.5" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
+                <span style={{ color: theme.textMuted }} className="text-[13px] font-semibold">{h.label}</span>
+                <span style={{ color: theme.text }} className="text-[14px] font-extrabold">{h.value != null ? `${Math.round(h.value)} kg` : "—"}</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+
       <p style={{ color: theme.textFaint }} className="text-[11px] px-1">Estimation basée sur une régression linéaire de ton historique réel — une hypothèse, pas une garantie : elle suppose que ta progression continue au même rythme.</p>
     </div>
   );
 }
 
-function WeightSimulation({ theme, weightEntries }) {
+function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutritionProfile }) {
   const sorted = useMemo(() => [...weightEntries].sort((a, b) => a.date.localeCompare(b.date)), [weightEntries]);
   const current = sorted.length ? sorted[sorted.length - 1].weight : null;
   const [target, setTarget] = useState("");
   const targetNum = parseLocaleNumber(target);
 
-  const estimate = useMemo(() => {
-    if (sorted.length < 3 || !Number.isFinite(targetNum) || targetNum <= 0) return null;
+  const regressionPoints = useMemo(() => {
+    if (sorted.length < 3) return [];
     const base = new Date(sorted[0].date).getTime();
-    const pts = sorted.map((e) => ({ x: (new Date(e.date).getTime() - base) / 86400000, y: e.weight }));
-    return estimateTargetETA(pts, targetNum);
-  }, [sorted, targetNum]);
+    return sorted.map((e) => ({ x: (new Date(e.date).getTime() - base) / 86400000, y: e.weight }));
+  }, [sorted]);
+
+  const estimate = useMemo(() => (
+    regressionPoints.length && Number.isFinite(targetNum) && targetNum > 0 ? estimateTargetETA(regressionPoints, targetNum) : null
+  ), [regressionPoints, targetNum]);
+
+  // --- Bilan calorique réel des 14 derniers jours renseignés (pas juste le poids) --------
+  // Recoupe apports (caloriesLog) et dépense estimée (BMR + activité déclarée) pour donner
+  // un second indicateur, indépendant de la balance/pesée, qui doit normalement pointer
+  // dans la même direction que la tendance observée sur le poids.
+  const age = EnergyCalculator.computeAge(nutritionProfile?.birthdate);
+  const bmr = EnergyCalculator.computeBMR({ sex: nutritionProfile?.sex, weightKg: current, heightCm: nutritionProfile?.height, age });
+  const tdee = bmr ? EnergyCalculator.computeTDEE({ bmr, activityLevel: nutritionProfile?.activityLevel, avgDailyWorkoutKcal: 0 }) : null;
+  const recentCalorieEntries = useMemo(() => {
+    const cutoff = Date.now() - 14 * 86400000;
+    return caloriesLog.filter((c) => new Date(c.date).getTime() >= cutoff);
+  }, [caloriesLog]);
+  const avgIntake = recentCalorieEntries.length ? recentCalorieEntries.reduce((a, c) => a + (c.calories || 0), 0) / recentCalorieEntries.length : null;
+  const avgProtein = useMemo(() => {
+    const withProtein = recentCalorieEntries.filter((c) => c.protein != null);
+    return withProtein.length ? withProtein.reduce((a, c) => a + c.protein, 0) / withProtein.length : null;
+  }, [recentCalorieEntries]);
+  // Règle classique : ~7700 kcal ≈ 1 kg de masse grasse. Hypothèse documentée, simplifiée
+  // (ne distingue pas perte de gras / de muscle).
+  const impliedWeeklyRateFromCalories = (avgIntake != null && tdee) ? ((avgIntake - tdee) * 7) / 7700 : null;
+
+  const daySpan = sorted.length >= 2 ? (new Date(sorted[sorted.length - 1].date).getTime() - new Date(sorted[0].date).getTime()) / 86400000 : 0;
+  const weeklyTrainingSessions = sessions.filter((s) => Date.now() - s.startedAt < 28 * 86400000).length / 4;
+  const confidence = computeSimulationConfidence({
+    weightEntriesCount: sorted.length, daySpan, caloriesLogCount: recentCalorieEntries.length, sessionsCount: Math.round(weeklyTrainingSessions * 4),
+  });
+
+  const horizonProjections = useMemo(() => {
+    if (!regressionPoints.length) return [];
+    return PROJECTION_HORIZONS.map((h) => ({ ...h, value: projectValueAtDays(regressionPoints, h.days) }));
+  }, [regressionPoints]);
+
+  // --- Recommandations simples, basées sur des règles (pas une IA) -----------------------
+  const recommendations = [];
+  if (avgIntake != null && tdee) {
+    const diffPct = ((avgIntake - tdee) / tdee) * 100;
+    if (nutritionProfile?.goal === "cut" && diffPct > -10) {
+      recommendations.push("Ton apport moyen récent est proche de ta dépense estimée — le déficit est plus faible que prévu pour une sèche. Envisage de réduire un peu tes apports ou d'augmenter le cardio.");
+    } else if (nutritionProfile?.goal === "bulk" && diffPct < 3) {
+      recommendations.push("Ton apport moyen récent est proche de ta dépense estimée — le surplus est plus faible que prévu pour une prise de masse. Envisage d'augmenter légèrement tes apports.");
+    }
+  }
+  if (avgProtein != null && current) {
+    const proteinPerKg = avgProtein / current;
+    if (proteinPerKg < 1.6) {
+      recommendations.push(`Ton apport moyen en protéines (~${Math.round(avgProtein)}g/jour, soit ${proteinPerKg.toFixed(1)}g/kg) est en dessous des repères usuels pour soutenir le maintien ou le gain musculaire — vise plutôt 1,8 à 2,2g/kg.`);
+    }
+  }
+  if (weeklyTrainingSessions < 2) {
+    recommendations.push("Moins de 2 séances par semaine en moyenne sur le dernier mois — la régularité d'entraînement influence directement la fiabilité de ces projections.");
+  }
 
   return (
     <div className="space-y-4">
-      <Card theme={theme} className="p-4">
-        <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p>
-        <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{current ? `${fmtWeight(current)} kg` : "—"}</p>
-      </Card>
+      <div className="flex items-center justify-between">
+        <Card theme={theme} className="p-4 flex-1 mr-2.5">
+          <p style={{ color: theme.textMuted }} className="text-[11px] font-semibold mb-1">Poids actuel</p>
+          <p style={{ color: theme.text }} className="text-[22px] font-extrabold">{current ? `${fmtWeight(current)} kg` : "—"}</p>
+        </Card>
+        <ConfidenceBadge theme={theme} score={confidence} />
+      </div>
 
       <LabeledInput theme={theme} label="Poids cible (kg)" value={target} onChange={setTarget} placeholder="Ex : 75" />
 
@@ -5823,16 +6503,58 @@ function WeightSimulation({ theme, weightEntries }) {
               <p style={{ color: theme.text }} className="text-[14px] font-extrabold">~{Math.round(estimate.days / 7)} semaines</p>
             </div>
             <div className="flex items-center justify-between">
-              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Rythme nécessaire</p>
+              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Rythme observé (pesées)</p>
               <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{estimate.weeklyRate > 0 ? "+" : ""}{fmtWeight(estimate.weeklyRate)} kg/semaine</p>
             </div>
+            {impliedWeeklyRateFromCalories != null && (
+              <div className="flex items-center justify-between pt-1.5" style={{ borderTop: `1px solid ${theme.border}` }}>
+                <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Rythme théorique (bilan calorique)</p>
+                <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{impliedWeeklyRateFromCalories > 0 ? "+" : ""}{fmtWeight(impliedWeeklyRateFromCalories)} kg/semaine</p>
+              </div>
+            )}
           </Card>
         ) : (
           <Card theme={theme}><EmptyState theme={theme} icon={Target} title="Estimation impossible" subtitle="Ta tendance actuelle stagne ou ne va pas vers cet objectif." /></Card>
         )
       )}
 
-      <p style={{ color: theme.textFaint }} className="text-[11px] px-1">Estimation basée sur une régression linéaire de ton historique de poids réel — une hypothèse, pas une garantie.</p>
+      {impliedWeeklyRateFromCalories != null && (
+        <p style={{ color: theme.textFaint }} className="text-[11px] px-1">
+          "Rythme théorique" = ({Math.round(avgIntake)} kcal consommées en moyenne − {tdee} kcal dépensées estimées) × 7 jours ÷ 7700 kcal/kg — hypothèse classique, simplifiée.
+        </p>
+      )}
+
+      {horizonProjections.length > 0 && (
+        <div>
+          <SectionTitle theme={theme}>Projections</SectionTitle>
+          <Card theme={theme} className="p-2">
+            {horizonProjections.map((h, i) => (
+              <div key={h.id} className="flex items-center justify-between px-3 py-2.5" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
+                <span style={{ color: theme.textMuted }} className="text-[13px] font-semibold">{h.label}</span>
+                <span style={{ color: theme.text }} className="text-[14px] font-extrabold">{h.value != null ? `${fmtWeight(h.value)} kg` : "—"}</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+
+      {recommendations.length > 0 && (
+        <div>
+          <SectionTitle theme={theme}>Recommandations</SectionTitle>
+          <div className="space-y-2">
+            {recommendations.map((r, i) => (
+              <Card key={i} theme={theme} className="p-3.5 flex items-start gap-2.5">
+                <Bell size={14} color={theme.accent} className="mt-0.5 shrink-0" />
+                <p style={{ color: theme.text }} className="text-[13px] leading-snug">{r}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p style={{ color: theme.textFaint }} className="text-[11px] px-1">
+        Estimation basée sur une régression linéaire de ton historique de poids réel, recoupée avec ton bilan calorique moyen quand il est disponible — une hypothèse, pas une garantie. L'indice de confiance reflète la quantité de données disponibles, pas une vraie probabilité statistique.
+      </p>
     </div>
   );
 }
