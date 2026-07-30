@@ -193,6 +193,40 @@ const PROJECTION_HORIZONS = [
   { id: "1y", label: "1 an", days: 365 },
 ];
 
+// Simule l'évolution du poids JOUR PAR JOUR, plutôt que d'extrapoler linéairement un
+// rythme moyen sur 12 mois (l'ancien calcul pouvait ainsi projeter des poids absurdes,
+// ex. "29 kg dans un an"). À chaque jour simulé :
+//  - le BMR est RECALCULÉ à partir du poids simulé de la VEILLE (pas du poids de départ
+//    figé) — le BMR dépend réellement du poids dans la formule de Mifflin-St Jeor, donc
+//    ça ralentit naturellement la perte/prise au fil du temps, sans facteur inventé ;
+//  - une légère suppression thermique adaptative supplémentaire est ajoutée en cas de
+//    déficit prolongé (jusqu'à 15% après ~30 semaines) — hypothèse documentée, cohérente
+//    avec la littérature sur l'adaptation métabolique, pas une vraie mesure individuelle ;
+//  - un PLANCHER physiologique dur (IMC 16, seuil de dénutrition sévère) arrête la
+//    simulation : le poids ne descend jamais en dessous, et `hitFloor` signale l'anomalie
+//    pour affichage d'une alerte plutôt qu'un chiffre irréaliste silencieux.
+function simulatePhysiologicalWeightPath({ startWeight, heightCm, sex, age, dailyIntake, dailyActivityExtra, daysAhead }) {
+  const heightM = heightCm / 100;
+  const weightFloor = 16 * heightM * heightM; // IMC 16 : seuil de dénutrition sévère
+  const path = [{ day: 0, weight: startWeight }];
+  let weight = startWeight;
+  let hitFloor = false;
+  for (let day = 1; day <= daysAhead; day++) {
+    if (!hitFloor) {
+      const bmr = EnergyCalculator.computeBMR({ sex, weightKg: weight, heightCm, age });
+      if (!bmr) { path.push({ day, weight }); continue; }
+      const weeksSoFar = day / 7;
+      const adaptiveSuppression = Math.min(0.15, weeksSoFar * 0.005);
+      const expenditure = (bmr + dailyActivityExtra) * (1 - adaptiveSuppression);
+      const balance = dailyIntake - expenditure;
+      weight = weight + balance / 7700;
+      if (weight <= weightFloor) { weight = weightFloor; hitFloor = true; }
+    }
+    path.push({ day, weight });
+  }
+  return { path, hitFloor, weightFloor };
+}
+
 // Petit indicateur visuel de confiance, réutilisé partout dans la Simulation.
 function ConfidenceBadge({ theme, score }) {
   const color = score >= 66 ? theme.good : score >= 33 ? theme.accent2 : theme.bad;
@@ -1064,6 +1098,15 @@ export default function App() {
         // (window.visualViewport), avec une transition douce plutôt qu'un saut brutal.
         height: viewportHeight ? `${viewportHeight}px` : undefined,
         transition: "height 0.25s ease",
+        // Corrige le bug de "fond noir parasite" sur les contrôles natifs (calendrier de
+        // <input type="date">, listes déroulantes <select>...) : `color-scheme` était
+        // fixé en dur à "light dark" dans index.css, ce qui laisse le SYSTÈME choisir
+        // l'apparence de ces contrôles selon SES propres réglages — indépendamment du
+        // thème clair/sombre choisi DANS l'app. Si le système est en sombre pendant que
+        // l'app est en clair (ou l'inverse), le calendrier/menu s'affichait avec des
+        // couleurs incohérentes (souvent un bloc noir). Le lier à `isDark` fait suivre
+        // ces contrôles natifs le thème réellement affiché par l'app, pas celui du système.
+        colorScheme: isDark ? "dark" : "light",
       }}
       className="w-full flex flex-col gt-app-shell"
     >
@@ -6416,12 +6459,13 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
   const [target, setTarget] = useState("");
   const targetNum = parseLocaleNumber(target);
   const age = EnergyCalculator.computeAge(nutritionProfile?.birthdate);
+  const heightCm = nutritionProfile?.height;
+  const sex = nutritionProfile?.sex;
 
   // Poids "au plus près" d'une date donnée (dernière pesée connue à cette date ou avant,
   // repli sur la première pesée si la date est antérieure à tout, ou sur le poids actuel
-  // si aucune pesée n'existe). C'est UNIQUEMENT via ce mécanisme que le poids intervient
-  // ici : il recalibre le BMR jour après jour, il ne pilote jamais directement la
-  // prédiction (voir la demande : le bilan énergétique doit rester le facteur principal).
+  // si aucune pesée n'existe). Sert uniquement à recalibrer le BMR historique jour par
+  // jour — jamais à piloter directement la prédiction.
   const weightAtDate = (dateStr) => {
     if (!sortedWeights.length) return current;
     const t = new Date(dateStr).getTime();
@@ -6433,17 +6477,19 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
   };
 
   // --- Bilan énergétique RÉEL, jour par jour ---------------------------------------------
-  // Pour chaque jour où des calories ont été renseignées (Objectifs nutritionnels) :
-  // dépense = BMR de CE jour-là (recalculé avec le poids connu à cette date) × activité
-  // déclarée, + séances de musculation/cardio RÉELLEMENT enregistrées ce jour précis
-  // (0 les jours sans entraînement), + marche si renseignée. Balance = apports − dépense.
+  // IMPORTANT — source de la dépense : EXACTEMENT la même formule que "Dépense du jour"
+  // (Objectifs nutritionnels) : BMR du jour + séances de musculation/cardio RÉELLEMENT
+  // enregistrées + marche. AUCUN multiplicateur d'activité théorique n'est appliqué ici
+  // (contrairement à avant) — ce multiplicateur est une estimation de référence, pas une
+  // mesure réelle, et le déficit/surplus affiché doit correspondre à ce que l'utilisateur
+  // voit déjà dans "Dépense du jour", pas à un autre calcul.
   const dailyBalances = useMemo(() => {
-    if (!nutritionProfile?.height || age == null) return [];
+    if (!heightCm || age == null) return [];
     return caloriesLog
       .filter((c) => c.calories != null)
       .map((c) => {
         const w = weightAtDate(c.date);
-        const bmrDay = EnergyCalculator.computeBMR({ sex: nutritionProfile.sex, weightKg: w, heightCm: nutritionProfile.height, age });
+        const bmrDay = EnergyCalculator.computeBMR({ sex, weightKg: w, heightCm, age });
         if (!bmrDay) return null;
         const daySessions = sessions.filter((s) => s.date === c.date);
         const strengthKcal = daySessions.filter((s) => s.type !== "cardio")
@@ -6452,39 +6498,71 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
           .reduce((a, s) => a + WorkoutCalorieEstimator.estimateCardioSessionKcal({ ...s.cardio, bodyWeightKg: w }), 0);
         const stepsEntry = (stepsLog || []).find((s) => s.date === c.date);
         const stepsKcal = stepsEntry ? WorkoutCalorieEstimator.estimateStepsKcal({ steps: stepsEntry.steps, bodyWeightKg: w }) : 0;
-        const expenditure = EnergyCalculator.computeTDEE({ bmr: bmrDay, activityLevel: nutritionProfile.activityLevel, avgDailyWorkoutKcal: strengthKcal + cardioKcal + stepsKcal });
-        return { date: c.date, intake: c.calories, expenditure, balance: c.calories - expenditure };
+        const activityExtra = strengthKcal + cardioKcal + stepsKcal;
+        const expenditure = bmrDay + activityExtra; // = "Dépense du jour", exactement
+        return { date: c.date, intake: c.calories, protein: c.protein ?? null, expenditure, activityExtra, balance: c.calories - expenditure };
       })
       .filter(Boolean)
       .sort((a, b) => a.date.localeCompare(b.date));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caloriesLog, sessions, stepsLog, nutritionProfile, age, sortedWeights, current]);
+  }, [caloriesLog, sessions, stepsLog, heightCm, sex, age, sortedWeights, current]);
 
   const avgDailyBalance = dailyBalances.length ? dailyBalances.reduce((a, d) => a + d.balance, 0) / dailyBalances.length : null;
+  const avgIntake = dailyBalances.length ? dailyBalances.reduce((a, d) => a + d.intake, 0) / dailyBalances.length : null;
+  const avgActivityExtra = dailyBalances.length ? dailyBalances.reduce((a, d) => a + d.activityExtra, 0) / dailyBalances.length : 0;
   const cumulativeBalance = dailyBalances.length ? dailyBalances.reduce((a, d) => a + d.balance, 0) : null;
   // ~7700 kcal ≈ 1 kg de masse grasse — approximation classique, à prendre comme un ordre
   // de grandeur (ne distingue pas la part de gras / de muscle / d'eau).
   const theoreticalMassChange = cumulativeBalance != null ? cumulativeBalance / 7700 : null;
-  const impliedWeeklyRate = avgDailyBalance != null ? (avgDailyBalance * 7) / 7700 : null;
 
-  // Date estimée d'atteinte de l'objectif — PILOTÉE PAR LE BILAN ÉNERGÉTIQUE, pas par la
-  // tendance de la balance.
-  const primaryEstimate = useMemo(() => {
-    if (impliedWeeklyRate == null || impliedWeeklyRate === 0 || !Number.isFinite(targetNum) || targetNum <= 0 || current == null) return null;
-    const deltaKg = targetNum - current;
-    if ((deltaKg > 0 && impliedWeeklyRate <= 0) || (deltaKg < 0 && impliedWeeklyRate >= 0)) return null;
-    const days = Math.round((deltaKg / impliedWeeklyRate) * 7);
-    return { days, date: new Date(Date.now() + days * 86400000), weeklyRate: impliedWeeklyRate };
-  }, [impliedWeeklyRate, targetNum, current]);
+  // --- Simulation physiologique jour par jour (remplace l'extrapolation linéaire) --------
+  // Trois trajectoires (centrale, basse, haute) qui font varier l'apport moyen de ±20% —
+  // "si ton adhérence réelle est un peu meilleure ou moins bonne que ta moyenne enregistrée"
+  // — plutôt qu'un chiffre unique trompeur. Le BMR est recalculé chaque jour simulé à
+  // partir du poids simulé de la veille (adaptation métabolique réelle), avec un plancher
+  // physiologique dur (IMC 16) qui empêche toute projection absurde.
+  const simPaths = useMemo(() => {
+    if (avgIntake == null || current == null || !heightCm || age == null) return null;
+    const variance = Math.abs(avgDailyBalance || 0) * 0.2;
+    const base = { startWeight: current, heightCm, sex, age, dailyActivityExtra: avgActivityExtra, daysAhead: 365 };
+    return {
+      central: simulatePhysiologicalWeightPath({ ...base, dailyIntake: avgIntake }),
+      low: simulatePhysiologicalWeightPath({ ...base, dailyIntake: avgIntake - variance }),
+      high: simulatePhysiologicalWeightPath({ ...base, dailyIntake: avgIntake + variance }),
+    };
+  }, [avgIntake, avgDailyBalance, avgActivityExtra, current, heightCm, sex, age]);
+
+  const weightAtDay = (path, day) => path?.path.find((p) => p.day === day)?.weight ?? null;
 
   const horizonProjections = useMemo(() => {
-    if (impliedWeeklyRate == null || current == null) return [];
-    return PROJECTION_HORIZONS.map((h) => ({ ...h, value: current + impliedWeeklyRate * (h.days / 7) }));
-  }, [impliedWeeklyRate, current]);
+    if (!simPaths) return [];
+    return PROJECTION_HORIZONS.map((h) => ({
+      ...h,
+      central: weightAtDay(simPaths.central, h.days),
+      low: weightAtDay(simPaths.low, h.days),
+      high: weightAtDay(simPaths.high, h.days),
+    }));
+  }, [simPaths]);
+
+  // Date estimée d'atteinte de l'objectif — lue directement sur la trajectoire simulée
+  // (qui ralentit naturellement en approchant du plancher), pas par simple division.
+  const primaryEstimate = useMemo(() => {
+    if (!simPaths || !Number.isFinite(targetNum) || targetNum <= 0 || current == null) return null;
+    const goingDown = targetNum < current;
+    if ((goingDown && avgDailyBalance >= 0) || (!goingDown && avgDailyBalance <= 0)) return null;
+    const crossing = simPaths.central.path.find((p) => (goingDown ? p.weight <= targetNum : p.weight >= targetNum));
+    if (!crossing || crossing.day === 0) return null;
+    return { days: crossing.day, date: new Date(Date.now() + crossing.day * 86400000) };
+  }, [simPaths, targetNum, current, avgDailyBalance]);
+
+  // Anomalie : le rythme actuel mènerait à un poids en dessous du seuil physiologique
+  // réaliste (IMC 16) dans l'année — signalée explicitement plutôt que silencieusement
+  // affichée comme un chiffre plausible.
+  const physiologicalWarning = simPaths?.central.hitFloor
+    ? `Ce rythme mènerait à un poids en dessous d'un seuil physiologique réaliste (~${fmtWeight(simPaths.central.weightFloor)} kg, IMC 16) avant un an. La projection a été plafonnée à ce niveau — dans les faits, le corps s'adapte bien avant d'en arriver là (fatigue, plateau, nécessité médicale d'arrêter un déficit).`
+    : null;
 
   // --- Recoupement secondaire : tendance OBSERVÉE sur les pesées ------------------------
-  // Ne pilote plus rien — sert uniquement à vérifier que le bilan énergétique calculé va
-  // bien dans le même sens que ce qui est réellement mesuré sur la balance.
   const regressionPoints = useMemo(() => {
     if (sortedWeights.length < 3) return [];
     const base = new Date(sortedWeights[0].date).getTime();
@@ -6496,17 +6574,26 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
     return reg ? reg.slope * 7 : null;
   }, [regressionPoints]);
 
-  // --- Indice de confiance : dominé par la régularité du suivi calorique (le facteur
-  // principal demandé), le poids n'y contribue qu'en bonus de recalibration. -------------
+  // --- Indice de confiance : dominé par la régularité du suivi calorique -----------------
   const windowDays = dailyBalances.length
     ? Math.max(1, (new Date(dailyBalances[dailyBalances.length - 1].date).getTime() - new Date(dailyBalances[0].date).getTime()) / 86400000 + 1)
     : 0;
   const completeness = windowDays ? dailyBalances.length / windowDays : 0;
   const confidence = Math.round(Math.min(100,
-    Math.min(50, dailyBalances.length * 4) // jusqu'à 50 pts : nombre de jours avec calories renseignées
-    + (windowDays ? Math.round(30 * completeness) : 0) // jusqu'à 30 pts : régularité (jours renseignés / fenêtre totale)
-    + Math.min(20, sortedWeights.length * 2) // jusqu'à 20 pts seulement : recalibration par le poids
+    Math.min(50, dailyBalances.length * 4)
+    + (windowDays ? Math.round(30 * completeness) : 0)
+    + Math.min(20, sortedWeights.length * 2)
   ));
+
+  // --- Note qualitative composition corporelle (pas de faux chiffre gras/muscle) --------
+  const avgProtein = useMemo(() => {
+    const withProtein = dailyBalances.filter((d) => d.protein != null);
+    return withProtein.length ? withProtein.reduce((a, d) => a + d.protein, 0) / withProtein.length : null;
+  }, [dailyBalances]);
+  const weeklyStrengthSessions = sessions.filter((s) => s.type !== "cardio" && Date.now() - s.startedAt < 28 * 86400000).length / 4;
+  const bodyCompNote = (avgProtein != null && current && (avgProtein / current) >= 1.6 && weeklyStrengthSessions >= 2 && avgDailyBalance < 0)
+    ? "Ton apport protéique et ton volume de musculation suggèrent qu'une partie de la perte estimée sera de la masse grasse plutôt que du muscle — mais cette simulation ne mesure pas directement ta composition corporelle, seulement ton poids total."
+    : null;
 
   const recommendations = [];
   if (avgDailyBalance != null) {
@@ -6516,8 +6603,8 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
       recommendations.push("Ton surplus calorique moyen réel est plus faible que prévu pour une prise de masse — envisage d'augmenter légèrement tes apports.");
     }
   }
-  if (observedWeeklyRate != null && impliedWeeklyRate != null && Math.sign(observedWeeklyRate) !== Math.sign(impliedWeeklyRate) && Math.abs(observedWeeklyRate) > 0.05) {
-    recommendations.push("Ta balance mesure une tendance différente de celle calculée à partir de ton bilan énergétique — vérifie la régularité et la précision de tes saisies (calories, pesées) pour fiabiliser la prédiction.");
+  if (observedWeeklyRate != null && avgDailyBalance != null && Math.sign(observedWeeklyRate) !== Math.sign(avgDailyBalance) && Math.abs(observedWeeklyRate) > 0.05) {
+    recommendations.push("Ta balance mesure une tendance différente de celle calculée à partir de ta dépense réelle du jour — vérifie la régularité et la précision de tes saisies (calories, pesées) pour fiabiliser la prédiction.");
   }
   if (dailyBalances.length < 7) {
     recommendations.push("Moins d'une semaine de suivi calorique complet — plus tu renseignes tes apports quotidiennement, plus cette simulation devient fiable.");
@@ -6532,7 +6619,7 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
         </Card>
         <Card theme={theme}>
           <EmptyState theme={theme} icon={Flame} title="Bilan énergétique indisponible"
-            subtitle="Renseigne tes calories quotidiennes (Objectifs nutritionnels), ta taille et ta date de naissance : cette simulation est basée avant tout sur ton bilan énergétique, pas sur ton poids seul." />
+            subtitle="Renseigne tes calories quotidiennes dans « Dépense du jour » (Objectifs nutritionnels), ta taille et ta date de naissance : cette simulation est basée avant tout sur ta dépense réelle enregistrée, jamais sur une estimation théorique seule." />
         </Card>
       </div>
     );
@@ -6549,8 +6636,9 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
       </div>
 
       <Card theme={theme} className="p-4 space-y-2.5">
-        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-1">Bilan énergétique ({dailyBalances.length} jour{dailyBalances.length !== 1 ? "s" : ""} renseigné{dailyBalances.length !== 1 ? "s" : ""})</p>
-        <div className="flex items-center justify-between">
+        <p style={{ color: theme.text }} className="font-bold text-[14px] mb-1">Bilan énergétique réel ({dailyBalances.length} jour{dailyBalances.length !== 1 ? "s" : ""} renseigné{dailyBalances.length !== 1 ? "s" : ""})</p>
+        <p style={{ color: theme.textFaint }} className="text-[11px] -mt-1.5">Source : dépense réellement calculée dans « Dépense du jour » — jamais une estimation théorique seule.</p>
+        <div className="flex items-center justify-between pt-1">
           <p style={{ color: theme.textMuted }} className="text-[12.5px]">Déficit/surplus quotidien moyen</p>
           <p style={{ color: avgDailyBalance >= 0 ? theme.good : theme.bad }} className="text-[14px] font-extrabold">{avgDailyBalance > 0 ? "+" : ""}{Math.round(avgDailyBalance)} kcal/j</p>
         </div>
@@ -6565,6 +6653,13 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
         <p style={{ color: theme.textFaint }} className="text-[10.5px]">Approximation classique : ~7700 kcal ≈ 1 kg de masse grasse (ne distingue pas gras/muscle/eau).</p>
       </Card>
 
+      {physiologicalWarning && (
+        <Card theme={theme} className="p-4 flex items-start gap-2.5" style={{ border: `1.5px solid ${theme.bad}55` }}>
+          <AlertTriangle size={16} color={theme.bad} className="mt-0.5 shrink-0" />
+          <p style={{ color: theme.text }} className="text-[13px] leading-snug">{physiologicalWarning}</p>
+        </Card>
+      )}
+
       <LabeledInput theme={theme} label="Poids cible (kg)" value={target} onChange={setTarget} placeholder="Ex : 75" />
 
       {targetNum > 0 && (
@@ -6578,10 +6673,6 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
               <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Durée nécessaire</p>
               <p style={{ color: theme.text }} className="text-[14px] font-extrabold">~{Math.round(primaryEstimate.days / 7)} semaines</p>
             </div>
-            <div className="flex items-center justify-between">
-              <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Rythme (bilan énergétique)</p>
-              <p style={{ color: theme.text }} className="text-[14px] font-extrabold">{primaryEstimate.weeklyRate > 0 ? "+" : ""}{fmtWeight(primaryEstimate.weeklyRate)} kg/semaine</p>
-            </div>
             {observedWeeklyRate != null && (
               <div className="flex items-center justify-between pt-1.5" style={{ borderTop: `1px solid ${theme.border}` }}>
                 <p style={{ color: theme.textMuted }} className="text-[12px] font-semibold">Recoupement avec tes pesées</p>
@@ -6590,22 +6681,34 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
             )}
           </Card>
         ) : (
-          <Card theme={theme}><EmptyState theme={theme} icon={Target} title="Estimation impossible" subtitle="Ton bilan énergétique moyen ne va pas dans le sens de cet objectif." /></Card>
+          <Card theme={theme}><EmptyState theme={theme} icon={Target} title="Estimation impossible" subtitle="Ton bilan énergétique moyen ne va pas dans le sens de cet objectif, ou l'objectif n'est pas atteint dans l'année simulée." /></Card>
         )
       )}
 
       {horizonProjections.length > 0 && (
         <div>
-          <SectionTitle theme={theme}>Projections (bilan énergétique)</SectionTitle>
+          <SectionTitle theme={theme}>Projections — fourchette probable</SectionTitle>
+          <p style={{ color: theme.textMuted }} className="text-[12px] px-1 mb-2 -mt-1">Si tu maintiens ce déficit moyen (± variation d'adhérence de ~20%).</p>
           <Card theme={theme} className="p-2">
             {horizonProjections.map((h, i) => (
               <div key={h.id} className="flex items-center justify-between px-3 py-2.5" style={{ borderTop: i ? `1px solid ${theme.border}` : "none" }}>
                 <span style={{ color: theme.textMuted }} className="text-[13px] font-semibold">{h.label}</span>
-                <span style={{ color: theme.text }} className="text-[14px] font-extrabold">{h.value != null ? `${fmtWeight(h.value)} kg` : "—"}</span>
+                <span style={{ color: theme.text }} className="text-[14px] font-extrabold">
+                  {h.low != null && h.high != null
+                    ? `${fmtWeight(Math.min(h.low, h.high))} – ${fmtWeight(Math.max(h.low, h.high))} kg`
+                    : "—"}
+                </span>
               </div>
             ))}
           </Card>
         </div>
+      )}
+
+      {bodyCompNote && (
+        <Card theme={theme} className="p-3.5 flex items-start gap-2.5">
+          <Info size={14} color={theme.accent} className="mt-0.5 shrink-0" />
+          <p style={{ color: theme.text }} className="text-[13px] leading-snug">{bodyCompNote}</p>
+        </Card>
       )}
 
       {recommendations.length > 0 && (
@@ -6622,8 +6725,19 @@ function WeightSimulation({ theme, weightEntries, sessions, caloriesLog, nutriti
         </div>
       )}
 
+      <div>
+        <SectionTitle theme={theme}>Hypothèses utilisées</SectionTitle>
+        <Card theme={theme} className="p-4 space-y-1.5">
+          <p style={{ color: theme.textMuted }} className="text-[12px]">• Dépense = celle de « Dépense du jour » (BMR réel + séances + marche), jamais une recommandation théorique.</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px]">• Le BMR est recalculé chaque jour simulé à partir du poids simulé — la perte/prise ralentit donc naturellement.</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px]">• Une légère suppression métabolique adaptative supplémentaire est ajoutée en cas de déficit prolongé (jusqu'à 15% après ~30 semaines).</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px]">• Un plancher physiologique (IMC 16) empêche toute projection irréaliste.</p>
+          <p style={{ color: theme.textMuted }} className="text-[12px]">• La fourchette basse/haute simule ±20% de variation d'adhérence par rapport à ta moyenne enregistrée.</p>
+        </Card>
+      </div>
+
       <p style={{ color: theme.textFaint }} className="text-[11px] px-1">
-        Prédiction basée en priorité sur ton bilan énergétique réel (calories consommées − dépense estimée jour par jour : métabolisme, activité, musculation, cardio, marche). Tes pesées ne servent qu'à recalibrer le métabolisme de base et à vérifier la cohérence de l'estimation — recalculé automatiquement à chaque nouvelle donnée enregistrée.
+        Recalculé automatiquement à chaque nouvelle donnée enregistrée (calories, séances, pesées). Reste une estimation, pas une garantie.
       </p>
     </div>
   );
